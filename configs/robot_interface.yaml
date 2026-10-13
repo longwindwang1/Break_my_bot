@@ -1,0 +1,119 @@
+# Robot interface: the single source of truth shared by Isaac Lab (Python) and Unity (C#).
+#
+# Describes the stock Isaac Lab Go2 velocity tasks that the W1 baseline policies were trained on.
+# Values were verified against the training runs' params/env.yaml (checked automatically by
+# export/test_parity.py::test_interface_matches_runs) and against a live rollout
+# (experiments/w3_reference/*.npz, checked by test_obs_layout / test_action_targets).
+# Any change here must keep those tests passing.
+#
+# Conventions: SI units, radians. World frame is z-up (Isaac Lab); Unity is y-up and left-handed,
+# so the Unity side converts its state into this frame *before* building the observation.
+# Quaternions are (w, x, y, z).
+
+version: 1
+robot: unitree_go2
+
+timing:
+  physics_dt: 0.005        # sim.dt (200 Hz)
+  decimation: 4            # physics steps per policy step
+  policy_dt: 0.02          # = physics_dt * decimation (50 Hz)
+  episode_length_s: 20.0
+
+# Policy order of the 12 joints. Grouped by joint type, NOT by leg.
+# Index i of the joint_pos / joint_vel / actions observation terms and of the action refer to joint_names[i].
+joint_names:
+  - FL_hip_joint
+  - FR_hip_joint
+  - RL_hip_joint
+  - RR_hip_joint
+  - FL_thigh_joint
+  - FR_thigh_joint
+  - RL_thigh_joint
+  - RR_thigh_joint
+  - FL_calf_joint
+  - FR_calf_joint
+  - RL_calf_joint
+  - RR_calf_joint
+
+# Nominal joint positions q_default (rad), same order as joint_names. From UNITREE_GO2_CFG.init_state.
+default_joint_pos: [0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5]
+
+init_base_height: 0.4      # spawn height of the base above the terrain origin (m)
+
+action:
+  type: joint_position
+  dim: 12
+  scale: 0.25
+  # Joint position target, held for all `decimation` physics steps:
+  #   q_target = default_joint_pos + scale * a        (a = raw policy output, no clipping)
+  offset: default_joint_pos
+  clip: null
+
+actuator:
+  # Explicit DC motor model (isaaclab.actuators.DCMotor). The torque is computed by us every physics
+  # step and applied as joint effort; the physics engine's own joint drive stays at zero stiffness/damping.
+  #   tau = Kp * (q_target - q) + Kd * (0 - qd)
+  #   qd_c      = clip(qd, -v_e, v_e),  v_e = velocity_limit * (1 + effort_limit / saturation_effort)
+  #   tau_max   = min( saturation_effort * ( 1 - qd_c / velocity_limit),  effort_limit)
+  #   tau_min   = max( saturation_effort * (-1 - qd_c / velocity_limit), -effort_limit)
+  #   tau_applied = clip(tau, tau_min, tau_max)
+  model: dc_motor
+  stiffness: 25.0          # Kp (N*m/rad)
+  damping: 0.5             # Kd (N*m*s/rad)
+  effort_limit: 23.5       # N*m
+  saturation_effort: 23.5  # N*m (stall torque)
+  velocity_limit: 30.0     # rad/s
+  friction: 0.0
+
+# Observation vector, concatenated in this order. No scaling; only height_scan is clipped.
+# Noise is added only during training (enable_corruption); deployment/play uses clean observations.
+# `name` is the Isaac Lab term key, `func` the isaaclab.envs.mdp.observations function.
+observation:
+  terms:
+    - {name: base_lin_vel,      func: base_lin_vel,      dim: 3,  frame: base, def: "R_base^T * v_com_world  (COM linear velocity, rotated into the base link frame)"}
+    - {name: base_ang_vel,      func: base_ang_vel,      dim: 3,  frame: base, def: "R_base^T * omega_world"}
+    - {name: projected_gravity, func: projected_gravity, dim: 3,  frame: base, def: "R_base^T * (0, 0, -1)"}
+    - {name: velocity_commands, func: generated_commands, dim: 3,  frame: base, def: "(vx, vy, wz) command"}
+    - {name: joint_pos,         func: joint_pos_rel,     dim: 12, def: "q - default_joint_pos"}
+    - {name: joint_vel,         func: joint_vel_rel,     dim: 12, def: "qd  (default joint velocity is 0)"}
+    - {name: actions,           func: last_action,       dim: 12, def: "raw policy output from the previous policy step (0 after reset)"}
+    - {name: height_scan,       func: height_scan,       dim: 187, rough_only: true, clip: [-1.0, 1.0], def: "clip(sensor_z - hit_z - offset, -1, 1), ray order given in height_scan.ordering"}
+  dim:
+    flat: 48
+    rough: 235
+
+height_scan:
+  # Ray caster attached to the base link. Ray origins follow the base position and yaw only
+  # (ray_alignment: yaw; roll/pitch ignored); rays point straight down (-z world) and hit only the terrain.
+  offset: 0.5              # subtracted from (sensor_z - hit_z)
+  sensor_offset: [0.0, 0.0, 20.0]  # ray origins start 20 m above the base; sensor_z itself is the base z (no offset)
+  grid_size: [1.6, 1.0]    # (x length, y length) in m, centred on the base
+  resolution: 0.1
+  grid_shape: [17, 11]     # points along x (-0.8..0.8), y (-0.5..0.5) -> 187 rays
+  # "xy": x varies fastest. Ray k has ix = k % 17, iy = k // 17 and yaw-frame offset
+  #   (x, y) = (-0.8 + 0.1 * ix, -0.5 + 0.1 * iy)
+  ordering: xy
+  update_period: 0.02      # refreshed once per policy step
+
+commands:
+  # UniformVelocityCommand ranges used in training (heading mode: wz is derived from a heading target).
+  lin_vel_x: [-1.0, 1.0]
+  lin_vel_y: [-1.0, 1.0]
+  ang_vel_z: [-1.0, 1.0]
+  heading_command: true
+  heading_control_stiffness: 0.5
+  resampling_time_s: 10.0
+
+policies:
+  flat:
+    task: Isaac-Velocity-Flat-Unitree-Go2-v0
+    obs_dim: 48
+    actor_hidden_dims: [128, 128, 128]
+    activation: elu
+    obs_normalization: false
+  rough:
+    task: Isaac-Velocity-Rough-Unitree-Go2-v0
+    obs_dim: 235
+    actor_hidden_dims: [512, 256, 128]
+    activation: elu
+    obs_normalization: false
