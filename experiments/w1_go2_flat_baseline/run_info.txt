@@ -1,0 +1,14 @@
+date:        2026-10-12T21:18:55-07:00
+task:        Isaac-Velocity-Flat-Unitree-Go2-v0
+num_envs:    4096
+seed:        0
+max_iter:    300
+repo_commit: none
+repo_dirty:  yes
+isaaclab:    37ddf626871758333d6ed89cf64ad702aef127d0
+gpu:         NVIDIA GeForce RTX 4070 Laptop GPU, 8188 MiB
+command:     /home/longwind/miniforge3/envs/env_isaaclab/bin/python /home/longwind/IsaacLab/scripts/reinforcement_learning/rsl_rl/train.py --task Isaac-Velocity-Flat-Unitree-Go2-v0 --num_envs 4096 --seed 0 --max_iterations 300 --run_name w1_go2_flat_baseline --headless
+exit_status: 0
+wall_time_s: 269
+peak_vram_mib: 3956
+log_dir:     logs/rsl_rl/unitree_go2_flat/2026-10-12_21-19-01_w1_go2_flat_baseline

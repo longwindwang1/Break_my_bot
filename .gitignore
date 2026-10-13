@@ -1,0 +1,31 @@
+# Training outputs (Isaac Lab writes logs/ relative to the cwd)
+logs/
+outputs/
+*.pt
+*.onnx
+*.ckpt
+
+# Per-run raw logs (README.md / run_info.txt in experiments/ are tracked)
+experiments/**/train.log
+experiments/**/vram.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Unity
+unity/[Ll]ibrary/
+unity/[Tt]emp/
+unity/[Oo]bj/
+unity/[Bb]uild/
+unity/[Bb]uilds/
+unity/[Ll]ogs/
+unity/[Uu]ser[Ss]ettings/
+unity/*.csproj
+unity/*.sln
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

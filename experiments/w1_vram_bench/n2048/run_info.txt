@@ -1,0 +1,14 @@
+date:        2026-10-12T18:45:48-07:00
+task:        Isaac-Velocity-Rough-Unitree-Go2-v0
+num_envs:    2048
+seed:        0
+max_iter:    30
+repo_commit: none
+repo_dirty:  yes
+isaaclab:    37ddf626871758333d6ed89cf64ad702aef127d0
+gpu:         NVIDIA GeForce RTX 4070 Laptop GPU, 8188 MiB
+command:     /home/longwind/miniforge3/envs/env_isaaclab/bin/python /home/longwind/IsaacLab/scripts/reinforcement_learning/rsl_rl/train.py --task Isaac-Velocity-Rough-Unitree-Go2-v0 --num_envs 2048 --seed 0 --max_iterations 30 --run_name w1_vram_bench_n2048 --headless
+exit_status: 0
+wall_time_s: 129
+peak_vram_mib: 4544
+log_dir:     logs/rsl_rl/unitree_go2_rough/2026-10-12_18-45-52_w1_vram_bench_n2048
