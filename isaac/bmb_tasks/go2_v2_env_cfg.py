@@ -23,8 +23,9 @@ from isaac.interface import apply_to_env_cfg
 from . import mdp
 
 HISTORY_LENGTH = 25
-# Friction curriculum: lower bound 0.6 -> 0.05 over the first ~1000 PPO iterations (24 env steps each).
-FRICTION_CURRICULUM_STEPS = 24_000
+# Friction curriculum: lower bound 0.6 -> 0.05 over the first ~1500 PPO iterations (24 env steps each);
+# v2 learns ~40% slower than v1 in debug runs (experiments/v2_debug/README.md).
+FRICTION_CURRICULUM_STEPS = 36_000
 FEET = ".*_foot"
 
 
