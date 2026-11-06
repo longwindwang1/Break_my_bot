@@ -26,6 +26,9 @@ unity/[Ll]ogs/
 unity/[Uu]ser[Ss]ettings/
 unity/*.csproj
 unity/*.sln
+# Copies of export/models/*.onnx made by the BMB/Sync models menu (export/models/ is the tracked original)
+unity/Assets/Resources/BMB/Models/
+unity/Assets/Resources/BMB/Models.meta
 
 # Editors / OS
 .vscode/

@@ -20,7 +20,7 @@ Pipeline: **Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference 
 policy inside Unity physics, which also serves as our sim-to-sim transfer test (experiment 3).
 
 Working rules that apply to you:
-- The user sets up the Unity editor and scenes by hand. You write C# scripts (under `unity/Assets/Scripts`) and tell them exactly what to wire up.
+- You set up the Unity editor and scenes (terrain, model import, components, physics settings) through the Unity MCP server, and write C# scripts under `unity/Assets/Scripts`. If the MCP can't do something, tell the user exactly what to set up by hand.
 - Ask before installing packages.
 - `configs/robot_interface.yaml` is the single source of truth for obs ordering, action scaling, PD gains,
   dt and decimation. Unity C# must **read it** (or a generated copy), not hardcode values. If something in
