@@ -12,7 +12,8 @@ and adapt online.
 ## Current status
 - Phase: W3 (smoke test)          <!-- update at the start of every phase -->
 - Last milestone done: W3 Python side — `configs/robot_interface.yaml`, ONNX export, parity tests passing.
-  Next: Unity side (Unity not installed on this machine yet). Visual check of both policies in play.py still pending.
+  Unity side runs on another machine; handoff for that Claude: `docs/unity_handoff.md`.
+  In progress: robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student; still in debug runs).
 
 ## Architecture
 Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play)
@@ -24,9 +25,10 @@ Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play
 
 ## Repo layout
 ```
-isaac/        training wrapper, reference recorder, interface.py (yaml loader + env.yaml checker)
+isaac/        launchers (train.py/play.py), our tasks (bmb_tasks/), training wrapper, reference recorder,
+              eval_policy.py, interface.py (yaml loader, env.yaml checker, apply_to_env_cfg)
 models/       world model, adaptation module, training code (PyTorch)
-export/       ONNX export + parity tests (exported models go to export/models/, gitignored)
+export/       ONNX export + parity tests; deployable models in export/models/ (tracked for the Unity machine)
 unity/        Unity project (C# scripts under unity/Assets/Scripts)
 configs/      shared configs, incl. robot_interface.yaml
 experiments/  results, plots, notes per experiment
@@ -76,7 +78,11 @@ docs/         design notes
 Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yaml` to `logs/rsl_rl/<exp>/<time>_<run>/`
 (cwd-relative); the wrapper writes `experiments/<exp_name>/run_info.txt` (seed, git hash, peak VRAM, log dir).
 - Train policy (headless): `isaac/train_policy.sh <task> <num_envs> <seed> <max_iter> <exp_name> [extra train.py args]`
-  - tasks: `Isaac-Velocity-Rough-Unitree-Go2-v0`, `Isaac-Velocity-Flat-Unitree-Go2-v0` (Play variants: `-Play-v0`)
+  (runs `isaac/train.py` = Isaac Lab's train.py with our `BMB-*` tasks registered; `isaac/play.py` likewise)
+  - tasks: `Isaac-Velocity-Rough-Unitree-Go2-v0`, `Isaac-Velocity-Flat-Unitree-Go2-v0` (Play variants: `-Play-v0`),
+    `BMB-Go2-Rough-v2` (teacher PPO), `BMB-Go2-Rough-v2-Distill` (student: add
+    `--agent rsl_rl_distillation_cfg_entry_point --load_run <teacher run> --checkpoint model_N.pt`), `BMB-Go2-Rough-v2-Play`
+  - always pass `--load_run`/`--checkpoint` for v2: teacher and student share `logs/rsl_rl/bmb_go2_v2/`
   - quick smoke test: `isaac/train_policy.sh Isaac-Velocity-Flat-Unitree-Go2-v0 512 0 5 scratch_smoke`
 - Play + export ONNX (export happens in play.py, not train.py → `<log_dir>/exported/policy.onnx`):
   `PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python ~/IsaacLab/scripts/reinforcement_learning/rsl_rl/play.py --task Isaac-Velocity-Rough-Unitree-Go2-Play-v0 --load_run <time>_<run>`
@@ -87,7 +93,10 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
   → `export/models/go2_<variant>.onnx` (input `obs` [1,48|235], output `actions` [1,12])
 - Parity tests: `~/miniforge3/envs/env_isaaclab/bin/python -m pytest -v`; one test: `... -m pytest -k "obs_layout and rough"`
 - Check yaml vs a run: `~/miniforge3/envs/env_isaaclab/bin/python isaac/interface.py <log_dir>/params`
-- Record reference rollout (needs Isaac Sim, ~1 min): see `experiments/w3_reference/README.md`
+- Record reference rollout (needs Isaac Sim, ~1 min): see `experiments/w3_reference/README.md`;
+  then `python export/npz_to_json.py <npz>` for the Unity-readable JSON
+- Evaluate policies side by side (scenarios: friction levels, friction drop, pushes, pits ± deceptive scan):
+  `python isaac/eval_policy.py --scenarios all --policy name=v1|teacher|student:<ckpt> ... --out experiments/v2_eval/results.jsonl`
 
 ## Working rules for Claude
 - Work on one milestone at a time; use plan mode before multi-file changes.

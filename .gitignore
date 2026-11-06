@@ -3,6 +3,8 @@ logs/
 outputs/
 *.pt
 *.onnx
+# ...except the deployable models the Unity machine needs (small: < 2 MB each)
+!export/models/*.onnx
 *.ckpt
 
 # Per-run raw logs (README.md / run_info.txt in experiments/ are tracked)

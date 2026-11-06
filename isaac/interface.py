@@ -66,6 +66,140 @@ def _close(a, b, tol=1e-6) -> bool:
     return math.isclose(float(a), float(b), rel_tol=0.0, abs_tol=tol)
 
 
+def expected_obs_groups(itf: dict, variant: str) -> list[dict]:
+    """Observation groups the deployed policy of `variant` consumes, in rsl-rl concatenation order:
+    [{"name", "history_length", "terms": [term definition from observation.terms (+ "train_func")]}]."""
+    term_defs = {t["name"]: t for t in itf["observation"]["terms"]}
+    spec = itf["policies"][variant]
+    if "groups" not in spec:  # v1: a single "policy" group
+        terms = [t for t in itf["observation"]["terms"] if variant == "rough" or not t.get("rough_only")]
+        return [{"name": "policy", "history_length": 0, "terms": terms}]
+    groups = []
+    for g in spec["groups"]:
+        terms = []
+        for name in g["terms"]:
+            term = dict(term_defs[name])
+            if name in g.get("train_func", {}):
+                term["train_func"] = g["train_func"][name]
+            terms.append(term)
+        groups.append({"name": g["name"], "history_length": g.get("history_length", 0), "terms": terms})
+    return groups
+
+
+def policy_obs_dim(itf: dict, variant: str) -> int:
+    return sum(t["dim"] * max(1, g["history_length"]) for g in expected_obs_groups(itf, variant) for t in g["terms"])
+
+
+def detect_variant(observations: dict, itf: dict) -> str:
+    """Which policies.<variant> an Isaac Lab observation config (env.yaml dict or configclass) belongs to."""
+    names = set(observations) if isinstance(observations, dict) else set(vars(observations))
+    for variant, spec in itf["policies"].items():
+        if "groups" in spec and {g["name"] for g in spec["groups"]} <= names:
+            return variant
+    policy = observations["policy"] if isinstance(observations, dict) else observations.policy
+    has_scan = (policy.get("height_scan") if isinstance(policy, dict) else getattr(policy, "height_scan", None)) is not None
+    return "rough" if has_scan else "flat"
+
+
+def _normalize_group_from_env_yaml(group: dict) -> dict:
+    terms = [
+        {"name": k, "func": v["func"].split(":")[-1], "scale": v["scale"], "clip": v["clip"]}
+        for k, v in group.items()
+        if k not in _OBS_GROUP_KEYS and isinstance(v, dict) and "func" in v
+    ]
+    return {"history_length": group.get("history_length") or 0, "terms": terms}
+
+
+def _normalize_group_from_cfg(group) -> dict:
+    terms = [
+        {"name": k, "func": v.func.__name__, "scale": v.scale, "clip": v.clip}
+        for k, v in vars(group).items()
+        if v is not None and hasattr(v, "func") and hasattr(v, "noise")
+    ]
+    return {"history_length": group.history_length or 0, "terms": terms}
+
+
+def compare_obs_groups(expected: list[dict], actual: dict[str, dict]) -> list[str]:
+    """Compare expected_obs_groups() against normalized actual groups {name: {"history_length", "terms"}}."""
+    errors = []
+    for g in expected:
+        act = actual.get(g["name"])
+        if act is None:
+            errors.append(f"observation group {g['name']!r} missing")
+            continue
+        names = [t["name"] for t in g["terms"]]
+        if names != [t["name"] for t in act["terms"]]:
+            errors.append(f"{g['name']}.terms order: interface={names} env={[t['name'] for t in act['terms']]}")
+            continue
+        if g["history_length"] != act["history_length"]:
+            errors.append(f"{g['name']}.history_length: interface={g['history_length']} env={act['history_length']}")
+        for ours, theirs in zip(g["terms"], act["terms"]):
+            field = f"{g['name']}.{ours['name']}"
+            if theirs["func"] != ours.get("train_func", ours["func"]):
+                errors.append(f"{field}.func: interface={ours.get('train_func', ours['func'])} env={theirs['func']}")
+            if not _close(ours.get("scale"), theirs["scale"]):
+                errors.append(f"{field}.scale: interface={ours.get('scale')} env={theirs['scale']}")
+            if not _close(ours.get("clip"), theirs["clip"]):
+                errors.append(f"{field}.clip: interface={ours.get('clip')} env={theirs['clip']}")
+    return errors
+
+
+def apply_to_env_cfg(env_cfg, variant: str, itf: dict | None = None) -> None:
+    """Write the interface values into an Isaac Lab locomotion env cfg (call at the end of __post_init__)
+    and check that its observation groups match policies.<variant>. Raises ValueError on mismatch."""
+    itf = itf or load_interface()
+    t = itf["timing"]
+    env_cfg.sim.dt = t["physics_dt"]
+    env_cfg.decimation = t["decimation"]
+    env_cfg.sim.render_interval = t["decimation"]
+    env_cfg.episode_length_s = t["episode_length_s"]
+
+    robot = env_cfg.scene.robot
+    robot.init_state.joint_pos = dict(zip(itf["joint_names"], itf["default_joint_pos"]))
+    robot.init_state.pos = (0.0, 0.0, itf["init_base_height"])
+    act = robot.actuators["base_legs"]
+    for key in ["stiffness", "damping", "effort_limit", "saturation_effort", "velocity_limit", "friction"]:
+        setattr(act, key, itf["actuator"][key])
+
+    action = env_cfg.actions.joint_pos
+    action.scale = itf["action"]["scale"]
+    action.use_default_offset = True
+    action.clip = itf["action"]["clip"]
+
+    hs = itf["height_scan"]
+    scanner = env_cfg.scene.height_scanner
+    scanner.offset.pos = tuple(hs["sensor_offset"])
+    scanner.ray_alignment = "yaw"
+    scanner.pattern_cfg.size = list(hs["grid_size"])
+    scanner.pattern_cfg.resolution = hs["resolution"]
+    scanner.pattern_cfg.ordering = hs["ordering"]
+    scanner.update_period = hs["update_period"]
+    env_cfg.scene.contact_forces.update_period = t["physics_dt"]
+
+    f = itf["friction"]
+    material = env_cfg.scene.terrain.physics_material
+    material.static_friction = f["terrain_static_friction"]
+    material.dynamic_friction = f["terrain_dynamic_friction"]
+    material.friction_combine_mode = f["combine_mode"]
+    env_cfg.sim.physics_material = material
+
+    c = itf["commands"]
+    cmd = env_cfg.commands.base_velocity
+    cmd.ranges.lin_vel_x, cmd.ranges.lin_vel_y, cmd.ranges.ang_vel_z = (tuple(c[k]) for k in ("lin_vel_x", "lin_vel_y", "ang_vel_z"))
+    cmd.heading_command = c["heading_command"]
+    cmd.heading_control_stiffness = c["heading_control_stiffness"]
+    cmd.resampling_time_range = (c["resampling_time_s"], c["resampling_time_s"])
+
+    actual = {
+        name: _normalize_group_from_cfg(group)
+        for name, group in vars(env_cfg.observations).items()
+        if group is not None and hasattr(group, "concatenate_terms")
+    }
+    errors = compare_obs_groups(expected_obs_groups(itf, variant), actual)
+    if errors:
+        raise ValueError("observation config does not match robot_interface.yaml:\n  " + "\n  ".join(errors))
+
+
 def check_against_env_yaml(params_dir: str | Path, interface: dict | None = None) -> list[str]:
     """Return a list of human-readable mismatches between the interface file and a run's env.yaml."""
     itf = interface or load_interface()
@@ -104,20 +238,15 @@ def check_against_env_yaml(params_dir: str | Path, interface: dict | None = None
         for key in ["stiffness", "damping", "effort_limit", "saturation_effort", "velocity_limit", "friction"]:
             expect(f"actuator.{key}", itf["actuator"][key], a[key])
 
+    variant = detect_variant(env["observations"], itf)
+    env_groups = {
+        name: _normalize_group_from_env_yaml(group)
+        for name, group in env["observations"].items()
+        if isinstance(group, dict)
+    }
+    errors += compare_obs_groups(expected_obs_groups(itf, variant), env_groups)
     obs_cfg = env["observations"]["policy"]
-    env_terms = [k for k, v in obs_cfg.items() if k not in _OBS_GROUP_KEYS and v is not None]
-    is_rough = "height_scan" in env_terms
-    our_terms = [term for term in itf["observation"]["terms"] if is_rough or not term.get("rough_only")]
-    if [term["name"] for term in our_terms] != env_terms:
-        errors.append(f"observation.terms order: interface={[t['name'] for t in our_terms]} env.yaml={env_terms}")
-    for term in our_terms:
-        env_term = obs_cfg.get(term["name"])
-        if env_term is None:
-            continue
-        if not env_term["func"].endswith(":" + term["func"]):
-            errors.append(f"observation.{term['name']}.func: interface={term['func']} env.yaml={env_term['func']}")
-        expect(f"observation.{term['name']}.scale", term.get("scale"), env_term["scale"])
-        expect(f"observation.{term['name']}.clip", term.get("clip"), env_term["clip"])
+    is_rough = obs_cfg.get("height_scan") is not None
     if is_rough:
         hs_params = obs_cfg["height_scan"]["params"]
         expect("height_scan.offset", itf["height_scan"]["offset"], hs_params.get("offset", 0.5))
@@ -131,6 +260,13 @@ def check_against_env_yaml(params_dir: str | Path, interface: dict | None = None
             errors.append(f"height_scan.ordering: interface={hs['ordering']} env.yaml={scanner['pattern_cfg']['ordering']}")
         if scanner["ray_alignment"] != "yaw":
             errors.append(f"height_scan: expected ray_alignment yaw, env.yaml has {scanner['ray_alignment']}")
+
+    material = env["scene"]["terrain"]["physics_material"]
+    f = itf["friction"]
+    expect("friction.terrain_static_friction", f["terrain_static_friction"], material["static_friction"])
+    expect("friction.terrain_dynamic_friction", f["terrain_dynamic_friction"], material["dynamic_friction"])
+    if material["friction_combine_mode"] != f["combine_mode"]:
+        errors.append(f"friction.combine_mode: interface={f['combine_mode']} env.yaml={material['friction_combine_mode']}")
 
     cmd = env["commands"]["base_velocity"]
     c = itf["commands"]

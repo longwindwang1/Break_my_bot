@@ -95,6 +95,16 @@ height_scan:
   ordering: xy
   update_period: 0.02      # refreshed once per policy step
 
+friction:
+  # Ground contact. The terrain material is fixed; the foot material is what varies (v2 randomizes it).
+  # Combine mode multiply => effective contact friction = foot friction * terrain friction = foot friction.
+  # Unity: PhysicMaterial frictionCombine = Multiply on both, terrain friction 1.0.
+  terrain_static_friction: 1.0
+  terrain_dynamic_friction: 1.0
+  combine_mode: multiply
+  v1_foot: [0.8, 0.6]        # (static, dynamic) on every robot body in the v1 baselines
+  foot_dynamic_ratio: 0.8    # v2: foot dynamic friction = 0.8 * static
+
 commands:
   # UniformVelocityCommand ranges used in training (heading mode: wz is derived from a heading target).
   lin_vel_x: [-1.0, 1.0]
@@ -117,3 +127,27 @@ policies:
     actor_hidden_dims: [512, 256, 128]
     activation: elu
     obs_normalization: false
+  v2:
+    # Robust policy v2 (friction / pushes / hidden pits), deployed as the distilled student.
+    # The teacher additionally sees sim-only privileged inputs and is never deployed.
+    task: BMB-Go2-Rough-v2
+    deploy: student
+    # rsl-rl concatenates these groups in order. Term definitions are the ones in observation.terms.
+    # History groups are flattened term by term; each term block runs oldest -> newest (current step last).
+    # After a reset -- and when the adaptation history is cleared on a surprisal alarm -- every history
+    # slot is filled with the current observation (Isaac Lab CircularBuffer semantics).
+    groups:
+      - name: policy
+        history_length: 0
+        terms: [base_lin_vel, base_ang_vel, projected_gravity, velocity_commands, joint_pos, joint_vel, actions, height_scan]
+        # Training only: the scan sometimes lies (reports flat ground) to emulate breakable ice / hidden holes.
+        train_func: {height_scan: height_scan_deceptive}
+      - name: proprio_history
+        history_length: 25
+        terms: [base_lin_vel, base_ang_vel, projected_gravity, joint_pos, joint_vel, actions]
+    obs_dim: 1360            # 235 + 45 * 25
+    actor_hidden_dims: [512, 256, 128]
+    activation: elu
+    obs_normalization: false
+    # Cautious gait after a surprisal alarm = clamp the velocity command (no separate training).
+    cautious_gait: {max_lin_vel: 0.3, max_ang_vel: 0.5}

@@ -17,10 +17,10 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-from export.export_onnx import export, load_actor_critic
-from isaac.interface import REPO_ROOT, check_against_env_yaml, load_interface
+from export.export_onnx import export, load_policy
+from isaac.interface import REPO_ROOT, check_against_env_yaml, expected_obs_groups, load_interface, policy_obs_dim
 
-VARIANTS = ["flat", "rough"]
+VARIANTS = ["flat", "rough", "v2"]
 REF_DIR = REPO_ROOT / "experiments" / "w3_reference"
 
 
@@ -75,9 +75,11 @@ def quat_apply_inverse(q_wxyz: np.ndarray, v: np.ndarray) -> np.ndarray:
 
 
 def build_obs(ref: dict, itf: dict, variant: str) -> np.ndarray:
-    """Rebuild the policy observation from raw physics state, following robot_interface.yaml only.
+    """Rebuild the deployed policy's input from raw physics state, following robot_interface.yaml only.
 
-    This is the reference implementation the Unity observation builder must match.
+    This is the reference implementation the Unity observation builder must match: per-term values,
+    then each observation group (history groups: per term, the last H frames oldest -> newest, with frames
+    before the episode start replaced by the first frame), groups concatenated in order.
     """
     q = ref["root_link_quat_w"]
     n = len(q)
@@ -92,15 +94,20 @@ def build_obs(ref: dict, itf: dict, variant: str) -> np.ndarray:
         "joint_vel": ref["joint_vel"],
         "actions": last_action,
     }
-    if variant == "rough":
+    if "scan_hits_z" in ref:
         hs = itf["height_scan"]
         raw = ref["scan_sensor_z"][:, None] - ref["scan_hits_z"] - hs["offset"]
         clip = next(t for t in itf["observation"]["terms"] if t["name"] == "height_scan")["clip"]
         parts["height_scan"] = np.clip(raw, *clip)
-    terms = [t for t in itf["observation"]["terms"] if variant == "rough" or not t.get("rough_only")]
-    for t in terms:
-        assert parts[t["name"]].shape == (n, t["dim"]), t["name"]
-    return np.concatenate([parts[t["name"]] for t in terms], axis=1).astype(np.float32)
+    blocks = []
+    for group in expected_obs_groups(itf, variant):
+        h = max(1, group["history_length"])
+        frames = np.maximum(np.arange(n)[:, None] - np.arange(h - 1, -1, -1)[None, :], 0)  # [n, h], oldest first
+        for t in group["terms"]:
+            x = parts[t["name"]]
+            assert x.shape == (n, t["dim"]), t["name"]
+            blocks.append(x[frames].reshape(n, h * t["dim"]))
+    return np.concatenate(blocks, axis=1).astype(np.float32)
 
 
 # --- interface file vs Isaac Lab ------------------------------------------------------------------
@@ -131,7 +138,7 @@ def test_reference_matches_interface(ref, itf, variant):
     np.testing.assert_allclose(ref["saturation_effort"], a["saturation_effort"])
     np.testing.assert_allclose(ref["physics_dt"], itf["timing"]["physics_dt"], rtol=1e-6)
     np.testing.assert_allclose(ref["step_dt"], itf["timing"]["policy_dt"], rtol=1e-6)
-    assert ref["obs"].shape[1] == itf["observation"]["dim"][variant]
+    assert ref["obs"].shape[1] == policy_obs_dim(itf, variant)
     assert not ref["dones"].any(), "reference rollout reset mid-way; re-record it"
 
 
@@ -145,8 +152,8 @@ def test_obs_layout(ref, itf, variant):
 
 def test_height_scan_ray_positions(ref, itf, variant):
     """Ray k lands at base_xy + R_yaw * grid_offset_k (x fastest), as documented in the yaml."""
-    if variant != "rough":
-        pytest.skip("flat policy has no height scan")
+    if "scan_hits_xy" not in ref:
+        pytest.skip("policy has no height scan")
     hs = itf["height_scan"]
     nx, ny = hs["grid_shape"]
     k = np.arange(nx * ny)
@@ -173,7 +180,7 @@ def test_action_targets(ref, itf):
 
 
 def test_torch_vs_onnx(variant, run_dir, checkpoint, onnx_session, ref):
-    policy, _ = load_actor_critic(run_dir, variant, checkpoint)
+    policy, _ = load_policy(run_dir, variant, checkpoint)
     rng = np.random.default_rng(0)
     obs = np.concatenate([ref["obs"], rng.normal(size=(256, ref["obs"].shape[1])).astype(np.float32)])
     with torch.no_grad():
@@ -188,7 +195,7 @@ def test_reference_replay(onnx_session, ref):
 
 def test_onnx_io_contract(onnx_session, itf, variant):
     (inp,), (out,) = onnx_session.get_inputs(), onnx_session.get_outputs()
-    assert (inp.name, inp.shape) == ("obs", [1, itf["observation"]["dim"][variant]])
+    assert (inp.name, inp.shape) == ("obs", [1, policy_obs_dim(itf, variant)])
     assert (out.name, out.shape) == ("actions", [1, len(itf["joint_names"])])
     meta = onnx_session.get_modelmeta().custom_metadata_map
-    assert meta["variant"] == variant and int(meta["obs_dim"]) == itf["observation"]["dim"][variant]
+    assert meta["variant"] == variant and int(meta["obs_dim"]) == policy_obs_dim(itf, variant)

@@ -37,8 +37,19 @@ Per step, captured **after** the step:
 - `joint_pos_target` [T, 12] (= default + 0.25·a_t); `applied_torque` [T, 12]: DC-motor output at the last physics substep
 - `dones` [T]
 
+Also per step: `body_link_pos_w` [T, 19, 3] and `body_link_quat_w` [T, 19, 4] for every link, in `body_names` order.
+Use these to check kinematics and joint signs in another simulator.
+
 Constants: `joint_names`, `default_joint_pos`, `stiffness`, `damping`, `effort_limit`, `velocity_limit`,
-`saturation_effort`, `physics_dt`, `step_dt`, `task`, `checkpoint`, `seed`, `command_fixed`, `sub_terrain`.
+`saturation_effort`, `physics_dt`, `step_dt`, `task`, `checkpoint`, `seed`, `command_fixed`, `sub_terrain`,
+`foot_friction`, `actor_obs_groups`, `runner`.
+
+Physical model as simulated, for comparing against the URDF imported elsewhere: `body_names`, `body_mass`,
+`body_inertia` [B, 9], `body_com_pose` [B, 7] (pos + quat xyzw, link frame), `joint_pos_limits`,
+`joint_vel_limits`, `joint_effort_limits`, `joint_armature`, `joint_friction_coeff`.
+
+`go2_*.json` hold the same data for Unity (made by `export/npz_to_json.py`). Each array is
+`{"shape", "data"}`, flattened row-major, and floats round-trip exactly to float32.
 
 ## Observations from recording
 - **Joint order is grouped by joint type** (4 hips, then 4 thighs, then 4 calves), not by leg.

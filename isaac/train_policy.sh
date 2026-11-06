@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Headless RSL-RL training wrapper around Isaac Lab's stock train.py.
+# Headless RSL-RL training wrapper around Isaac Lab's stock train.py (via isaac/train.py, which also
+# registers the BMB-* tasks).
 #
 # Usage:
 #   isaac/train_policy.sh <task> <num_envs> <seed> <max_iter> <exp_name> [extra train.py args...]
@@ -12,7 +13,7 @@
 set -euo pipefail
 
 if [[ $# -lt 5 ]]; then
-    sed -n '4,7p' "$0"
+    sed -n '5,8p' "$0"
     exit 1
 fi
 TASK=$1 NUM_ENVS=$2 SEED=$3 MAX_ITER=$4 EXP_NAME=$5
@@ -31,7 +32,7 @@ RUN_NAME=${EXP_NAME//\//_}  # Isaac Lab log dir suffix; no slashes
 mkdir -p "$EXP_DIR"
 cd "$REPO_ROOT"
 
-CMD=("$PYTHON" "$ISAACLAB_DIR/scripts/reinforcement_learning/rsl_rl/train.py"
+CMD=("$PYTHON" "$REPO_ROOT/isaac/train.py"
      --task "$TASK" --num_envs "$NUM_ENVS" --seed "$SEED" --max_iterations "$MAX_ITER"
      --run_name "$RUN_NAME" --headless "$@")
 
