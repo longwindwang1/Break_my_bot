@@ -13,7 +13,8 @@ and adapt online.
 - Phase: W3 (smoke test)          <!-- update at the start of every phase -->
 - Last milestone done: W3 Python side — `configs/robot_interface.yaml`, ONNX export, parity tests passing.
   Unity side runs on another machine; handoff for that Claude: `docs/unity_handoff.md`.
-  In progress: robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student; still in debug runs).
+  In progress: robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student). Teacher done (`experiments/v2_teacher/`);
+  next: distill the student, export `go2_v2.onnx`, record the v2 reference, run eval.
 
 ## Architecture
 Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play)
