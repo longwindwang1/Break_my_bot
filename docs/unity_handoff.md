@@ -4,6 +4,11 @@ For the Claude Code instance working on the **Unity side** on a separate machine
 run on a Linux machine (Isaac Lab); results reach you through this repo. Read `CLAUDE.md` too. This file
 covers what you need for Unity. Last updated 2026-11-05.
 
+Sync: `git clone https://github.com/longwindwang1/Break_my_bot.git` (branch `main`). Put the Unity project in
+`unity/`; `.gitignore` already excludes Unity's Library/Temp/Obj/Build/Logs/UserSettings. Commit Unity work
+to a branch or `main` only when the user asks, and `git pull` before starting: new ONNX models and
+references arrive from the Linux machine.
+
 ## 1. Project in brief
 
 10-week course project (Physical AI / world models / games). A human player builds obstacle levels and
