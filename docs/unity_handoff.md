@@ -20,7 +20,7 @@ Pipeline: **Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference 
 policy inside Unity physics, which also serves as our sim-to-sim transfer test (experiment 3).
 
 Working rules that apply to you:
-- The user sets up the Unity editor and scenes by hand. You write C# scripts (under `unity/Assets/Scripts`) and tell them exactly what to wire up.
+- You set up the Unity editor and scenes (terrain, model import, components, physics settings) through the Unity MCP server, and write C# scripts under `unity/Assets/Scripts`. If the MCP can't do something, tell the user exactly what to set up by hand.
 - Ask before installing packages.
 - `configs/robot_interface.yaml` is the single source of truth for obs ordering, action scaling, PD gains,
   dt and decimation. Unity C# must **read it** (or a generated copy), not hardcode values. If something in
@@ -33,8 +33,8 @@ Working rules that apply to you:
 |---|---|
 | W1–2 baseline | Done. Go2 PPO policies, flat and rough (v1) |
 | W3 smoke test, Python side | Done. Interface yaml, ONNX export, parity tests (Isaac ↔ ONNX) all pass |
-| **W3 smoke test, Unity side** | **Your job, not started** |
-| Robust policy v2 | Trained (friction/ice, pushes, payload, hidden pits). `export/models/go2_v2.onnx` and reference `go2_v2.json` are in the repo; parity tests pass (see §9). Do it after v1 flat and rough work in Unity |
+| W3 smoke test, Unity side | Done (2026-11-07). Flat, rough and v2 walk in Unity; §8 levels 1–4 pass. Results, model notes and open questions: `experiments/w3_unity/README.md` |
+| Robust policy v2 | Trained (friction/ice, pushes, payload, hidden pits). `export/models/go2_v2.onnx` and reference `go2_v2.json` are in the repo; parity tests pass (see §9). Runs in Unity (`W3_Rough` scene) |
 | W4–5 world model, W6–8 game, W9–10 results | Later |
 
 ## 3. Your task: W3 Unity smoke test
@@ -171,7 +171,7 @@ Build the observation in Unity like this, then **verify every rule numerically**
   - Total mass 15.02 kg. base 6.921, each hip 0.678, thigh 1.152, calf 0.154, foot 0.040. `Head_upper` / `Head_lower` are 0.001 each.
   - 19 bodies in Isaac order: base, FL/FR_hip, Head_upper, RL/RR_hip, thighs, Head_lower, calves, feet.
   - Joint limits (rad): hip ±1.047, thigh [−1.571, 3.491], calf [−2.723, −0.838].
-  - PhysX joint effort limit 1e9, so torque limiting happens **only** in the DC-motor code (§5.4). Joint velocity limit 30.1 rad/s, armature 0, joint friction 0.
+  - PhysX joint effort limit 1e9, so torque limiting happens **only** in the DC-motor code (§5.4). PhysX joint velocity limit 30.1 rad/s for hips and thighs, 15.7 rad/s for calves (`joint_vel_limits`), armature 0, joint friction 0.
   - Feet sit about 0.022 m above the ground in stance, so the foot collision sphere radius is about 0.022 m.
 - ArticulationBody, floating base (root not immovable). Self-collision **off** (Isaac: disabled).
 - Solver: Isaac uses 4 position iterations and 0 velocity iterations. Use 4 / 1 in Unity (minimum).

@@ -1,0 +1,20 @@
+{
+    "name": "BMB.Editor",
+    "rootNamespace": "BMB.Editor",
+    "references": [
+        "BMB.Runtime",
+        "Unity.InferenceEngine",
+        "Unity.Robotics.UrdfImporter"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
