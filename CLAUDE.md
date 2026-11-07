@@ -13,8 +13,9 @@ and adapt online.
 - Phase: W3 (smoke test)          <!-- update at the start of every phase -->
 - Last milestone done: W3 Python side — `configs/robot_interface.yaml`, ONNX export, parity tests passing.
   Unity side runs on another machine; handoff for that Claude: `docs/unity_handoff.md`.
-  In progress: robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student). Teacher done (`experiments/v2_teacher/`);
-  next: distill the student, export `go2_v2.onnx`, record the v2 reference, run eval.
+  Robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student) done: `export/models/go2_v2.onnx` (student, 1360-d input),
+  parity tests pass; at foot μ 0.1 it survives 90 % vs 52 % for v1 (`experiments/v2_eval/`).
+  Open: pit / deceptive-scan test does not discriminate (pits too shallow); pushes not better than v1.
 
 ## Architecture
 Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play)
@@ -90,8 +91,8 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
 - TensorBoard: `~/miniforge3/envs/env_isaaclab/bin/tensorboard --logdir logs/rsl_rl`
 - Collect world model data: `TODO`
 - Train world model: `TODO`
-- Export ONNX: `~/miniforge3/envs/env_isaaclab/bin/python export/export_onnx.py --run <log_dir> --variant flat|rough`
-  → `export/models/go2_<variant>.onnx` (input `obs` [1,48|235], output `actions` [1,12])
+- Export ONNX: `~/miniforge3/envs/env_isaaclab/bin/python export/export_onnx.py --run <log_dir> --variant flat|rough|v2`
+  → `export/models/go2_<variant>.onnx` (input `obs` [1,48|235|1360], output `actions` [1,12]; v2 exports the student)
 - Parity tests: `~/miniforge3/envs/env_isaaclab/bin/python -m pytest -v`; one test: `... -m pytest -k "obs_layout and rough"`
 - Check yaml vs a run: `~/miniforge3/envs/env_isaaclab/bin/python isaac/interface.py <log_dir>/params`
 - Record reference rollout (needs Isaac Sim, ~1 min): see `experiments/w3_reference/README.md`;
