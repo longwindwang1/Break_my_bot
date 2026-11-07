@@ -1,0 +1,14 @@
+date:        2026-11-05T22:07:38-08:00
+task:        BMB-Go2-Rough-v2
+num_envs:    4096
+seed:        0
+max_iter:    3000
+repo_commit: ff86f298d0efe43b2f7b9ae59739e734a2f615eb
+repo_dirty:  yes
+isaaclab:    37ddf626871758333d6ed89cf64ad702aef127d0
+gpu:         NVIDIA GeForce RTX 4070 Laptop GPU, 8188 MiB
+command:     /home/longwind/miniforge3/envs/env_isaaclab/bin/python /home/longwind/Break_my_bot/isaac/train.py --task BMB-Go2-Rough-v2 --num_envs 4096 --seed 0 --max_iterations 3000 --run_name v2_teacher --headless
+exit_status: 0
+wall_time_s: 19967
+peak_vram_mib: 6900
+log_dir:     logs/rsl_rl/bmb_go2_v2/2026-11-05_22-07-41_v2_teacher

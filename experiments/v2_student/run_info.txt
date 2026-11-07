@@ -1,0 +1,14 @@
+date:        2026-11-06T16:34:44-08:00
+task:        BMB-Go2-Rough-v2-Distill
+num_envs:    4096
+seed:        0
+max_iter:    1000
+repo_commit: b040b154a4514d8035aef215ddc0fb4f51f39b1e
+repo_dirty:  yes
+isaaclab:    37ddf626871758333d6ed89cf64ad702aef127d0
+gpu:         NVIDIA GeForce RTX 4070 Laptop GPU, 8188 MiB
+command:     /home/longwind/miniforge3/envs/env_isaaclab/bin/python /home/longwind/Break_my_bot/isaac/train.py --task BMB-Go2-Rough-v2-Distill --num_envs 4096 --seed 0 --max_iterations 1000 --run_name v2_student --headless --agent rsl_rl_distillation_cfg_entry_point --load_run 2026-11-05_22-07-41_v2_teacher --checkpoint model_2999.pt
+exit_status: 0
+wall_time_s: 6412
+peak_vram_mib: 6366
+log_dir:     logs/rsl_rl/bmb_go2_v2/2026-11-06_16-34-51_v2_student

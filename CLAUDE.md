@@ -13,7 +13,9 @@ and adapt online.
 - Phase: W3 (smoke test)          <!-- update at the start of every phase -->
 - Last milestone done: W3 Python side — `configs/robot_interface.yaml`, ONNX export, parity tests passing.
   Unity side runs on another machine; handoff for that Claude: `docs/unity_handoff.md`.
-  In progress: robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student; still in debug runs).
+  Robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student) done: `export/models/go2_v2.onnx` (student, 1360-d input),
+  parity tests pass; at foot μ 0.1 it survives 90 % vs 52 % for v1 (`experiments/v2_eval/`).
+  Open: pit / deceptive-scan test does not discriminate (pits too shallow); pushes not better than v1.
 
 ## Two machines (this file is shared by both)
 - **Linux** (training): Isaac Lab, PyTorch, ONNX export, parity tests. Every command under "Commands" assumes it.
@@ -115,12 +117,11 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
 - Collect world model data: `TODO`
 - Train world model: `TODO`
 - Export ONNX: `~/miniforge3/envs/env_isaaclab/bin/python export/export_onnx.py --run <log_dir> --variant flat|rough|v2 [--checkpoint model_N.pt] [--opset 15]`
-  → `export/models/go2_<variant>.onnx` (input `obs` [1,48|235|1360], output `actions` [1,12]; opset 18 default,
-  15 for older Unity Inference Engine versions)
+  → `export/models/go2_<variant>.onnx` (input `obs` [1,48|235|1360], output `actions` [1,12]; v2 exports the student;
+  opset 18 default, 15 for older Unity Inference Engine versions)
 - Parity tests: `~/miniforge3/envs/env_isaaclab/bin/python -m pytest -v`; one test: `... -m pytest -k "obs_layout and rough"`.
   Driven by `experiments/w3_reference/go2_<variant>.npz`; tests that need the training run (`logs/`, gitignored)
-  skip when it's missing, and v2 skips until `go2_v2.npz` is recorded. The module imports torch/rsl_rl/onnxruntime,
-  so it only runs in `env_isaaclab`.
+  skip when it's missing. The module imports torch/rsl_rl/onnxruntime, so it only runs in `env_isaaclab`.
 - Check yaml vs a run: `~/miniforge3/envs/env_isaaclab/bin/python isaac/interface.py <log_dir>/params`
 - Record reference rollout (needs Isaac Sim, ~1 min): see `experiments/w3_reference/README.md`;
   then `python export/npz_to_json.py <npz>` for the Unity-readable JSON

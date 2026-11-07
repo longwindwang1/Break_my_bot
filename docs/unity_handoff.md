@@ -34,7 +34,7 @@ Working rules that apply to you:
 | W1–2 baseline | Done. Go2 PPO policies, flat and rough (v1) |
 | W3 smoke test, Python side | Done. Interface yaml, ONNX export, parity tests (Isaac ↔ ONNX) all pass |
 | **W3 smoke test, Unity side** | **Your job, not started** |
-| Robust policy v2 | Training in progress on the Linux machine (friction/ice, pushes, payload, hidden pits). It will arrive later as `export/models/go2_v2.onnx` (see §9) |
+| Robust policy v2 | Trained (friction/ice, pushes, payload, hidden pits). `export/models/go2_v2.onnx` and reference `go2_v2.json` are in the repo; parity tests pass (see §9). Do it after v1 flat and rough work in Unity |
 | W4–5 world model, W6–8 game, W9–10 results | Later |
 
 ## 3. Your task: W3 Unity smoke test
@@ -58,7 +58,8 @@ height-scan raycasts (§5.6). Do it after flat works.
 | `configs/robot_interface.yaml` | The interface contract (timing, joint order, default pose, action, actuator, obs layout, height scan, friction, commands, policy specs) |
 | `export/models/go2_flat.onnx` | v1 flat policy. Input `obs` float[1,48], output `actions` float[1,12]. Opset 18. Ops: Gemm, Elu |
 | `export/models/go2_rough.onnx` | v1 rough policy. Input `obs` float[1,235] |
-| `experiments/w3_reference/go2_flat.json`, `go2_rough.json` | Isaac Lab reference rollouts (500 policy steps = 10 s, command vx = 0.5). Every array is `{"shape": [...], "data": [...]}` flattened row-major, so it is JsonUtility-friendly. Floats round-trip exactly to float32 |
+| `export/models/go2_v2.onnx` | v2 robust policy (distilled student). Input `obs` float[1,1360], see §9 |
+| `experiments/w3_reference/go2_flat.json`, `go2_rough.json`, `go2_v2.json` | Isaac Lab reference rollouts (500 policy steps = 10 s, command vx = 0.5). Every array is `{"shape": [...], "data": [...]}` flattened row-major, so it is JsonUtility-friendly. Floats round-trip exactly to float32 |
 | `experiments/w3_reference/README.md` | Field-by-field description of the reference files |
 | `export/test_parity.py` → `build_obs()` | **Reference implementation** of the observation builder (numpy). Port this logic to C# |
 | `CLAUDE.md` | Project-wide context |
@@ -170,7 +171,7 @@ Build the observation in Unity like this, then **verify every rule numerically**
   - Total mass 15.02 kg. base 6.921, each hip 0.678, thigh 1.152, calf 0.154, foot 0.040. `Head_upper` / `Head_lower` are 0.001 each.
   - 19 bodies in Isaac order: base, FL/FR_hip, Head_upper, RL/RR_hip, thighs, Head_lower, calves, feet.
   - Joint limits (rad): hip ±1.047, thigh [−1.571, 3.491], calf [−2.723, −0.838].
-  - PhysX joint effort limit 1e9, so torque limiting happens **only** in the DC-motor code (§5.4). Joint velocity limit 30.1 rad/s, armature 0, joint friction 0.
+  - PhysX joint effort limit 1e9, so torque limiting happens **only** in the DC-motor code (§5.4). PhysX joint velocity limit 30.1 rad/s for hips and thighs, 15.7 rad/s for calves (`joint_vel_limits`), armature 0, joint friction 0.
   - Feet sit about 0.022 m above the ground in stance, so the foot collision sphere radius is about 0.022 m.
 - ArticulationBody, floating base (root not immovable). Self-collision **off** (Isaac: disabled).
 - Solver: Isaac uses 4 position iterations and 0 velocity iterations. Use 4 / 1 in Unity (minimum).
@@ -196,9 +197,11 @@ Write these as Unity Edit Mode / Play Mode tests or a debug scene. Report max er
    10 s at 0.47 m/s, and the flat policy's base sits low, at about 0.20 m (§10). Then keyboard/gamepad control.
    Trajectories will drift from the reference (different physics engine). That gap is experiment 3, not a bug.
 
-## 9. Coming later: robust policy v2
-Already specified in `configs/robot_interface.yaml` under `policies.v2`. It will arrive as
-`export/models/go2_v2.onnx` with a reference `go2_v2.json`.
+## 9. Robust policy v2 (available)
+Specified in `configs/robot_interface.yaml` under `policies.v2`.
+- Model: `export/models/go2_v2.onnx`. Reference: `experiments/w3_reference/go2_v2.json`, recorded with foot μ = 1.0 on `random_rough`; it walks about 4.1 m in 10 s with the base about 0.37 m above the terrain.
+- Training notes: `experiments/v2_teacher/` and `experiments/v2_student/`. Isaac Lab results per scenario: `experiments/v2_eval/`.
+- Run the same verification levels as §8 with the v2 files. Level 2 now also checks the history buffer.
 - Deployed network = distilled student. Input 1360 = the 235-dim obs above + a **proprio history** of 25
   steps × 45 dims (base_lin_vel, base_ang_vel, projected_gravity, joint_pos, joint_vel, actions; no command).
 - History layout: term by term, each term block oldest → newest (current step last). After a reset —

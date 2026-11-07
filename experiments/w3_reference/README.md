@@ -8,8 +8,9 @@ The W3 Unity observation builder must rebuild `obs` from its own state the same 
 |---|---|---|---|---|
 | `go2_flat.npz`  | `w1_go2_flat_baseline/model_299.pt`   | `Isaac-Velocity-Flat-Unitree-Go2-Play-v0`  | plane | (0.5, 0, 0) |
 | `go2_rough.npz` | `w1_go2_rough_baseline/model_1499.pt` | `Isaac-Velocity-Rough-Unitree-Go2-Play-v0` | `random_rough` only (0–6 cm relief) | (0.5, 0, 0) |
+| `go2_v2.npz` | `v2_student/model_999.pt` (deployed student) | `BMB-Go2-Rough-v2-Play` | `random_rough` only, foot μ fixed at 1.0 | (0.5, 0, 0) |
 
-Each covers 500 policy steps (10 s), 1 env, seed 0, clean observations (Play config), and the command is fixed (heading mode off, no resampling). Neither rollout resets partway through.
+Each covers 500 policy steps (10 s), 1 env, seed 0, clean observations (Play config), and the command is fixed (heading mode off, no resampling). None of the rollouts resets partway through.
 
 Re-record with (from the repo root):
 ```
@@ -19,13 +20,18 @@ PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/record_reference.py \
 PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/record_reference.py \
   --task Isaac-Velocity-Rough-Unitree-Go2-Play-v0 --load_run 2026-10-12_21-27-17_w1_go2_rough_baseline \
   --sub_terrain random_rough --out experiments/w3_reference/go2_rough.npz
+PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/record_reference.py \
+  --task BMB-Go2-Rough-v2-Play --agent rsl_rl_distillation_cfg_entry_point \
+  --load_run 2026-11-06_16-34-51_v2_student --checkpoint model_999.pt \
+  --sub_terrain random_rough --foot_friction 1.0 --out experiments/w3_reference/go2_v2.npz
 ```
+For v2 the recorder also turns off payload, COM and gain randomization, pushes and scan deception, so the robot is the nominal one.
 `--sub_terrain` is needed for rough because the stairs/boxes sub-terrains spawn the robot on a flat platform,
 where every height-scan ray hits z = 0.
 
 ## Fields (T = 500; world frame z-up; quaternions w, x, y, z)
 Per step, captured **before** the action is applied, so it matches the state `obs[t]` was computed from:
-- `obs` [T, 48|235]: the policy input
+- `obs` [T, 48|235|1360]: the policy input. For v2 it is `policy` (235) followed by `proprio_history` (45 × 25); the layout is in `policies.v2` of the yaml
 - `command` [T, 3]
 - `joint_pos`, `joint_vel` [T, 12]: in `joint_names` order
 - `root_link_pos_w` [T, 3], `root_link_quat_w` [T, 4]
