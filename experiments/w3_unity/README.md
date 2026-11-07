@@ -75,11 +75,40 @@ of 0.089 kg); imported as is, Unity gets 25.3 kg because the importer gives link
 - Play mode does not advance while the editor is in the background; headless trials step a preview scene by hand
   instead. An unsaved, modified untitled scene makes the test runner block on a save dialog (and the MCP time out).
 
-## Open questions for the Linux side
+## Open questions for the Linux side (answered 2026-11-07)
 
-1. Does `go2.usd` have the calf-lower collision geometry (`*_calflower*` in the URDF)? Unity keeps it on the calf.
-2. Height-scan value for a missed ray: Unity assumes −∞ → −1 after the clip (Isaac's `inf` hits). Rare in practice.
-3. Exact `random_rough` parameters (from the rough run's `params/env.yaml`); Unity uses values inferred from the
-   reference hits: 0.01–0.06 m in 0.01 m steps on a 0.1 m grid, 0.25 m flat border.
-4. Step-by-step comparison on rough ground would need Isaac's exact terrain: it could be reconstructed from the
-   ~93k reference hit points (planned for experiment 3).
+1. **Does `go2.usd` have the calf-lower collision geometry (`*_calflower*` in the URDF)? Unity keeps it on the calf.**
+   - **Yes, and Unity's choice matches it.**
+   - Each calf body in `go2.usd` carries three collision cylinders: the URDF's `calf`, `calflower` and `calflower1`, merged into the calf body exactly as Unity does.
+   - Sizes and poses in the calf frame equal the URDF's, including:
+     - the FL calf's thinner main cylinder (r 0.012 vs 0.013);
+     - rotations about y of −0.21 / −0.20, +0.05 and +0.53 rad.
+
+   | shape (calf frame) | radius | height | position | rotation about y |
+   |---|---|---|---|---|
+   | calf, main | 0.012 (FL), 0.013 (others) | 0.12 | (0.008 \| 0.010, 0, −0.060) | −0.21 \| −0.20 rad |
+   | calflower | 0.011 | 0.065 | (0.020, 0, −0.148) | +0.05 rad |
+   | calflower1 | 0.0155 | 0.03 | (0.008, 0, −0.1875) | +0.53 rad |
+
+   The other collision shapes also match the URDF. There are 27 shapes in total, all primitives, no meshes:
+   - base box 0.376 × 0.094 × 0.114;
+   - hip cylinder r 0.046, h 0.04 at y ±0.08;
+   - thigh box 0.213 × 0.0245 × 0.034 at z −0.1065;
+   - foot sphere r 0.022 at x −0.002;
+   - Head_upper cylinder r 0.05, h 0.09;
+   - Head_lower sphere r 0.047.
+
+   Checked with `inspect_go2_collision.py` (this folder; needs Isaac Sim, run in `env_isaaclab`). It lists every collision prim of the `go2.usd` that `UNITREE_GO2_CFG` loads (Isaac Sim 5.1 asset).
+2. **Height-scan value for a missed ray: Unity assumes −∞ → −1 after the clip (Isaac's `inf` hits).**
+   - **Correct.**
+   - `raycast_mesh` (`isaaclab/utils/warp/ops.py`) fills missed hits with `inf`.
+   - `height_scan` = base_z − hit_z − 0.5 gives −∞, and the obs clip makes it −1.
+   - Rays start 20 m above the base with `max_distance` 1e6, so a miss only happens beyond the edge of the terrain mesh.
+3. **Exact `random_rough` parameters.**
+   - Identical in the v1 rough run and the v2 runs (`params/env.yaml`): `random_uniform_terrain` on 8 m × 8 m tiles, `noise_range` (0.01, 0.06), `noise_step` 0.01, `horizontal_scale` 0.1, `vertical_scale` 0.005, `border_width` 0.25, `slope_threshold` 0.75, `downsampled_scale` null.
+   - Unity's inferred values are right. Two additions:
+     - this terrain ignores the curriculum difficulty;
+     - `slope_threshold` has no effect here: the largest step between neighbouring cells is 0.05 m over 0.1 m (slope 0.5 < 0.75), so the mesh is a plain triangulated heightfield with no vertical walls.
+4. **Step-by-step comparison on rough ground would need Isaac's exact terrain.**
+   - Open; planned for experiment 3.
+   - Simpler than reconstructing it from the hit points: the Linux side can save the terrain mesh (vertices and triangles) the reference rollout ran on, in the npz/json, when the references are next recorded.
