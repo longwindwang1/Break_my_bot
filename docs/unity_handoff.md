@@ -33,8 +33,8 @@ Working rules that apply to you:
 |---|---|
 | W1–2 baseline | Done. Go2 PPO policies, flat and rough (v1) |
 | W3 smoke test, Python side | Done. Interface yaml, ONNX export, parity tests (Isaac ↔ ONNX) all pass |
-| **W3 smoke test, Unity side** | **Your job, not started** |
-| Robust policy v2 | Trained (friction/ice, pushes, payload, hidden pits). `export/models/go2_v2.onnx` and reference `go2_v2.json` are in the repo; parity tests pass (see §9). Do it after v1 flat and rough work in Unity |
+| W3 smoke test, Unity side | Done (2026-11-07). Flat, rough and v2 walk in Unity; §8 levels 1–4 pass. Results, model notes and open questions: `experiments/w3_unity/README.md` |
+| Robust policy v2 | Trained (friction/ice, pushes, payload, hidden pits). `export/models/go2_v2.onnx` and reference `go2_v2.json` are in the repo; parity tests pass (see §9). Runs in Unity (`W3_Rough` scene) |
 | W4–5 world model, W6–8 game, W9–10 results | Later |
 
 ## 3. Your task: W3 Unity smoke test

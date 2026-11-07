@@ -10,9 +10,11 @@ the robot uses a learned world model to predict outcomes, detect physics changes
 and adapt online.
 
 ## Current status
-- Phase: W3 (smoke test)          <!-- update at the start of every phase -->
-- Last milestone done: W3 Python side — `configs/robot_interface.yaml`, ONNX export, parity tests passing.
-  Unity side runs on another machine; handoff for that Claude: `docs/unity_handoff.md`.
+- Phase: W4–5 (world model)       <!-- update at the start of every phase -->
+- Last milestone done: W3 smoke test, both sides. Python: `configs/robot_interface.yaml`, ONNX export, parity tests.
+  Unity (`experiments/w3_unity/`): flat, rough and v2 walk in Unity physics; verification levels 1–4 of
+  `docs/unity_handoff.md` §8 pass (ONNX ≤ 2.2e-6, obs ≤ 3.6e-7, kinematics ≤ 0.006 mm); 44 EditMode tests.
+  Unity vs Isaac gait statistics in `experiments/w3_unity/trials.md` (Unity's gait period 15–18 % longer for flat/v2).
   Robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student) done: `export/models/go2_v2.onnx` (student, 1360-d input),
   parity tests pass; at foot μ 0.1 it survives 90 % vs 52 % for v1 (`experiments/v2_eval/`).
   Open: pit / deceptive-scan test does not discriminate (pits too shallow); pushes not better than v1.
@@ -25,8 +27,9 @@ and adapt online.
   drives the editor through a Unity MCP server. Read `docs/unity_handoff.md` first (the Unity-side spec); `git pull`
   to get new models and references. Physics, friction and robot settings applied through the MCP come from
   `configs/robot_interface.yaml` / handoff §5–7, never typed in from memory.
-  `*.onnx` is gitignored except under `export/models/`, so a model copied into `unity/Assets/` is not committed
-  unless `.gitignore` gets a `!unity/...` exception.
+  `*.onnx` is gitignored except under `export/models/`; Unity's copies (`unity/Assets/Resources/BMB/Models/`,
+  made by `BMB/Sync models`) are gitignored on purpose.
+  Unity work happens on the `unity-w3` branch until merged; it merges `origin/main` to pick up new models.
 
 ## Architecture
 Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play)
@@ -42,7 +45,8 @@ isaac/        launchers (train.py/play.py), our tasks (bmb_tasks/), training wra
               eval_policy.py, interface.py (yaml loader, env.yaml checker, apply_to_env_cfg)
 models/       world model, adaptation module, training code (PyTorch)  [not created yet]
 export/       ONNX export + parity tests; deployable models in export/models/ (tracked for the Unity machine)
-unity/        Unity project (C# scripts under unity/Assets/Scripts)    [not created yet; made on Windows]
+unity/        Unity 6000.3.8f1 project: Assets/Scripts/{Runtime,Editor,Tests/EditMode}, Assets/Robots (URDF, Go2.prefab),
+              Assets/Scenes (W3_Flat, W3_Rough)
 configs/      shared configs, incl. robot_interface.yaml
 experiments/  results, plots, notes per experiment
 docs/         design notes
@@ -52,7 +56,7 @@ docs/         design notes
 - `isaac/train.py` / `isaac/play.py` run Isaac Lab's stock rsl_rl scripts through `isaac/_launch.py`, which imports
   `isaac.bmb_tasks` first so the `BMB-*` gym ids exist before hydra looks them up. Use them, not
   `~/IsaacLab/scripts/...`, for any BMB task. `ISAACLAB_DIR` / `CONDA_ENV` override the default paths.
-- `isaac/interface.py` is pure Python + PyYAML (importable without Isaac Sim) and is the only reader of the yaml.
+- `isaac/interface.py` is pure Python + PyYAML (importable without Isaac Sim) and is the only Python reader of the yaml.
 - v2 (`isaac/bmb_tasks/go2_v2_env_cfg.py`, `mdp/`) has three obs groups: `policy` (deployed terms; the height scan
   may lie during training), `proprio_history` (25 steps), and `teacher` (privileged, sim-only). The teacher PPO
   trains on `teacher`; the student distills onto `policy` + `proprio_history` (1360-d), which is what ships.
@@ -60,6 +64,18 @@ docs/         design notes
 - `export/export_onnx.py` loads checkpoints into rsl-rl modules and imports Isaac Lab's exporter by file path, so it
   runs without Isaac Sim. Output has a static batch of 1 and metadata (variant, obs_dim, yaml hash).
 - `export/test_parity.py::build_obs` is the reference observation builder that the Unity C# must reproduce.
+
+## How the Unity side fits together
+- `BMB.Runtime`: `RobotInterface` reads the yaml straight from the repo (YamlDotNet); `IsaacFrame` converts
+  Unity ↔ Isaac axes (polar vs axial vectors); `ObservationBuilder` ports `build_obs` (incl. v2 history);
+  `HeightScanner`, `DCMotor`, `PolicyRunner` (Inference Engine, CPU); `Go2Body` (articulation, policy joint order);
+  `Go2Controller` runs the §5.1 loop in FixedUpdate, or headless via `ExternallyStepped` + `ControlStep()`.
+- Anything that must match the yaml or the Isaac model is an idempotent editor menu (`BMB/...` in
+  `Assets/Scripts/Editor`), which the MCP calls; scenes are rebuilt by `W3Scenes`, the robot by `Go2Setup`.
+- `Go2.prefab` reproduces Isaac's 19-body model, not the raw URDF (which adds rotor links and 1 kg defaults).
+  ArticulationBody velocity caps / solver iterations are not serialized: `Go2Body.ApplyRuntimeSettings`.
+- Reference data (`experiments/w3_reference/*.json`) is read from the repo by the tests; nothing is duplicated into Assets
+  except the ONNX copies Unity must import.
 
 ## Core specs
 - Robot: Unitree Go2, same official URDF in Isaac Lab and Unity
@@ -129,6 +145,14 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
   `python isaac/eval_policy.py --scenarios all --policy name=v1|teacher|student:<ckpt> ... --out experiments/v2_eval/results.jsonl`
   (one subprocess per scenario; `python isaac/eval_summary.py <results.jsonl>` reprints the table)
 
+Unity (Windows; editor menu or MCP `execute_menu_item`):
+- After pulling new models: `BMB/Sync models`; after yaml / reference changes: `BMB/Apply interface settings`, `BMB/Setup Go2`
+- Scenes: `BMB/Build W3_Flat scene`, `BMB/Build W3_Rough scene` (Play needs the editor in the foreground)
+- Unity vs Isaac report: `BMB/Headless trials/Run all and write report` → `experiments/w3_unity/trials.md`
+- Tests: MCP `run_tests` (EditMode, assembly `BMB.Tests.EditMode`), or with the project closed:
+  `Unity.exe -batchmode -projectPath unity -runTests -testPlatform EditMode -testResults results.xml`.
+  Keep a saved scene open: a modified untitled scene makes the test runner block on a save dialog.
+
 ## Working rules for Claude
 - Work on one milestone at a time; use plan mode before multi-file changes.
 - Ask before installing packages or modifying Isaac Lab source.
@@ -141,7 +165,7 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
 
 ## Milestones
 - [x] W1–2 Baseline: Isaac Lab setup, Go2 PPO policy, measure VRAM/speed locally
-- [ ] W3 Smoke test: flat-ground policy running in Unity, interface parity verified
+- [x] W3 Smoke test: flat-ground policy running in Unity, interface parity verified (also rough and v2)
 - [ ] W4–5 World model: data collection, ensemble training, surprisal + CUSUM
 - [ ] W6–8 Game: adaptation trigger, level editor, disruptions, HUD, ghost path
 - [ ] W9–10 Results: 3 experiments, demo video, report
