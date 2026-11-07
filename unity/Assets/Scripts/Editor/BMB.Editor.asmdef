@@ -2,7 +2,9 @@
     "name": "BMB.Editor",
     "rootNamespace": "BMB.Editor",
     "references": [
-        "Unity.InferenceEngine"
+        "BMB.Runtime",
+        "Unity.InferenceEngine",
+        "Unity.Robotics.UrdfImporter"
     ],
     "includePlatforms": [
         "Editor"
