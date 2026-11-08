@@ -22,5 +22,14 @@ namespace BMB
 
         /// <summary>Robot links; Robot×Robot collisions are off (Isaac: self-collision disabled).</summary>
         public const string RobotLayer = "Robot";
+
+        /// <summary>
+        /// Deceptive surfaces (hidden-pit covers): the height scan sees them, nothing collides with them, so the scan
+        /// reports ground where there is none, like v2's deceptive scan in training.
+        /// </summary>
+        public const string ScanOnlyLayer = "ScanOnly";
+
+        /// <summary>Layers the height scan rays hit.</summary>
+        public static int ScanMask => UnityEngine.LayerMask.GetMask(TerrainLayer, ScanOnlyLayer);
     }
 }

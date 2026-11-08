@@ -25,13 +25,18 @@ namespace BMB.Editor
             EnsureLayer(SimSettings.TerrainLayer);
             var robot = EnsureLayer(SimSettings.RobotLayer);
             Physics.IgnoreLayerCollision(robot, robot, true);
+            // ScanOnly: seen by the height scan (raycasts), touched by nothing.
+            var scanOnly = EnsureLayer(SimSettings.ScanOnlyLayer);
+            for (var other = 0; other < 32; other++)
+                Physics.IgnoreLayerCollision(scanOnly, other, true);
 
             foreach (var asset in new[] { "ProjectSettings/TimeManager.asset", "ProjectSettings/DynamicsManager.asset", "ProjectSettings/TagManager.asset" })
                 EditorUtility.SetDirty(AssetDatabase.LoadAllAssetsAtPath(asset)[0]);
             AssetDatabase.SaveAssets();
 
             Debug.Log($"[BMB] Applied interface settings: fixedDeltaTime {Time.fixedDeltaTime}, solver {SimSettings.SolverIterations}/{SimSettings.SolverVelocityIterations}, " +
-                      $"layers {SimSettings.TerrainLayer}={LayerMask.NameToLayer(SimSettings.TerrainLayer)} {SimSettings.RobotLayer}={robot} (Robot×Robot collisions off)");
+                      $"layers {SimSettings.TerrainLayer}={LayerMask.NameToLayer(SimSettings.TerrainLayer)} {SimSettings.RobotLayer}={robot} (Robot×Robot collisions off) " +
+                      $"{SimSettings.ScanOnlyLayer}={scanOnly} (no collisions)");
         }
 
         /// <summary>

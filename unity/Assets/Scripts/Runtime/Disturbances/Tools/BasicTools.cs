@@ -183,7 +183,7 @@ namespace BMB
             new ButtonControl { Label = "Clear painted zones", Danger = true, Click = m.ClearFriction },
         };
 
-        public override void OnSelect(DisturbanceManager m) => cursor ??= new BrushCursor(Color.white);
+        public override void OnSelect(DisturbanceManager m) { if (Application.isPlaying) cursor ??= new BrushCursor(Color.white); }
 
         public override void OnDeselect(DisturbanceManager m)
         {

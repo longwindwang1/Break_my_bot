@@ -22,6 +22,13 @@ namespace BMB
         /// <summary>Unity world hit points of the last scan (NaN where a ray missed).</summary>
         public Vector3[] Hits { get; }
 
+        /// <summary>
+        /// Deceptive scan like v2 training's height_scan_deceptive: every ray reports the median reading, i.e. flat
+        /// ground at the robot's current level (used to reproduce Isaac's pits_deceived evaluation).
+        /// </summary>
+        public bool Deceive { get; set; }
+        float[] sorted;
+
         public HeightScanner(HeightScanSpec spec, PhysicsScene physics, int terrainMask)
         {
             this.spec = spec;
@@ -67,6 +74,16 @@ namespace BMB
                     rawOut[k] = float.NegativeInfinity;
                     Hits[k] = new Vector3(float.NaN, float.NaN, float.NaN);
                 }
+            }
+            if (Deceive)
+            {
+                // torch.median: the lower of the two middle values for an even count.
+                sorted ??= new float[rawOut.Length];
+                System.Array.Copy(rawOut, sorted, rawOut.Length);
+                System.Array.Sort(sorted);
+                var median = sorted[(sorted.Length - 1) / 2];
+                for (var k = 0; k < rawOut.Length; k++)
+                    rawOut[k] = median;
             }
         }
     }

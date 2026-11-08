@@ -606,6 +606,7 @@ Button.btn .neon-icon {
 .event.fall .event-bar { background-color: var(--red); }
 .event.fall .event-text { color: var(--red); }
 .event.mode .event-bar { background-color: var(--cyan); }
+.event.deceptive .event-bar { background-color: #B26BFF; }
 
 /* ---- drive and stick ------------------------------------------------------------------------------------------ */
 

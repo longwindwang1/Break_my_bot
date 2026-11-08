@@ -18,6 +18,10 @@ namespace BMB
         Rough,
         /// <summary>An 8 m Isaac Lab tile (tile, difficulty, seed); yaw in multiples of 90°.</summary>
         IsaacTile,
+        /// <summary>Pit under a ground-looking cover on the ScanOnly layer: the height scan sees flat ground, feet fall in.</summary>
+        HiddenPit,
+        /// <summary>Pit under a solid ice slab that breaks after the robot has stood on it for breakAfter seconds.</summary>
+        BreakableIce,
     }
 
     /// <summary>One edit of the ground, kept as data so the level can be recomputed, edited and (later) saved.</summary>
@@ -35,13 +39,19 @@ namespace BMB
         public IsaacTileType tile;
         public float difficulty = 0.5f;
         public int seed;
+        [Tooltip("Breakable ice: seconds of contact with the robot before it breaks")]
+        public float breakAfter = 0.4f;
 
         public const float StairDepth = 0.3f;
         public const float Plateau = 1f;
 
         /// <summary>Isaac mesh terrains and our blocks / pits / stairs get vertical walls at any height.</summary>
         public bool Hard => type is GroundFeatureType.Box or GroundFeatureType.Pit or GroundFeatureType.Stairs
+                            or GroundFeatureType.HiddenPit or GroundFeatureType.BreakableIce
                             || (type == GroundFeatureType.IsaacTile && IsaacTiles.IsHard(tile));
+
+        /// <summary>A pit with a cover object (hidden pit, breakable ice).</summary>
+        public bool Covered => type is GroundFeatureType.HiddenPit or GroundFeatureType.BreakableIce;
 
         public Vector2 ToLocal(Vector2 p)
         {
@@ -77,6 +87,8 @@ namespace BMB
             GroundFeatureType.Stairs => $"stairs {steps}×{height * 100:F0} cm",
             GroundFeatureType.Rough => $"rough {size.x:F1}×{size.y:F1} m, up to {height * 100:F0} cm",
             GroundFeatureType.IsaacTile => $"Isaac tile {tile}, difficulty {difficulty:F2}",
+            GroundFeatureType.HiddenPit => $"hidden pit {size.x:F1}×{size.y:F1} m, {height * 100:F0} cm deep",
+            GroundFeatureType.BreakableIce => $"breakable ice {size.x:F1}×{size.y:F1} m over {height * 100:F0} cm, breaks after {breakAfter:F1} s",
             _ => type.ToString(),
         };
     }
@@ -102,8 +114,71 @@ namespace BMB
         [SerializeField] Vector2 size = new Vector2(60f, 60f);
         [SerializeField] Material material;
         [SerializeField] PhysicsMaterial friction;
+        [Tooltip("Breakable ice slabs (translucent)")]
+        [SerializeField] Material iceMaterial;
+        [Tooltip("Outline hidden pits for the player (the robot's scan is fooled either way)")]
+        [SerializeField] bool revealHidden;
         [SerializeField] List<GroundFeature> features = new List<GroundFeature>();
         [SerializeField] int nextId = 1;
+
+        readonly Dictionary<int, DeceptiveCover> covers = new Dictionary<int, DeceptiveCover>();
+
+        /// <summary>Raised when a breakable-ice slab breaks.</summary>
+        public event Action<DeceptiveCover> CoverBroken;
+
+        public IReadOnlyCollection<DeceptiveCover> Covers => covers.Values;
+        public Material GroundMaterial => material;
+        public Material IceMaterial { get => iceMaterial; set => iceMaterial = value; }
+        public PhysicsMaterial Friction => friction;
+
+        public bool RevealHidden
+        {
+            get => revealHidden;
+            set
+            {
+                revealHidden = value;
+                foreach (var c in covers.Values)
+                    c.UpdateOutline();
+            }
+        }
+
+        /// <summary>Puts every broken ice slab back.</summary>
+        public void RestoreCovers()
+        {
+            foreach (var c in covers.Values)
+                c.Restore();
+        }
+
+        internal void NotifyBroken(DeceptiveCover cover) => CoverBroken?.Invoke(cover);
+
+        /// <summary>Creates covers for new covered features and removes those of deleted ones (broken stays broken).</summary>
+        void SyncCovers()
+        {
+            var alive = new HashSet<int>();
+            foreach (var f in features)
+            {
+                if (!f.Covered)
+                    continue;
+                alive.Add(f.id);
+                if (!covers.TryGetValue(f.id, out var c) || c == null)
+                    covers[f.id] = DeceptiveCover.Create(this, f);
+            }
+            foreach (var id in new List<int>(covers.Keys))
+                if (!alive.Contains(id))
+                {
+                    if (covers[id] != null)
+                        DestroyImmediate(covers[id].gameObject);
+                    covers.Remove(id);
+                }
+        }
+
+        void DestroyCovers()
+        {
+            foreach (var c in covers.Values)
+                if (c != null)
+                    DestroyImmediate(c.gameObject);
+            covers.Clear();
+        }
 
         int nx, nz;  // cells; vertices are (nx + 1) × (nz + 1)
         float[] heights;
@@ -133,7 +208,11 @@ namespace BMB
             Refresh();
         }
 
-        void OnDisable() => DestroyChunks();
+        void OnDisable()
+        {
+            DestroyChunks();
+            DestroyCovers();
+        }
 
         // --- features ---------------------------------------------------------------------------------------------
 
@@ -162,6 +241,8 @@ namespace BMB
             tileCache.Clear();
             Refresh();
         }
+
+        public GroundFeature Feature(int id) => features.Find(f => f.id == id);
 
         /// <summary>The topmost (last added) feature whose footprint contains the point, or null.</summary>
         public GroundFeature FeatureAt(Vector3 world)
@@ -250,6 +331,7 @@ namespace BMB
             for (var i = 0; i < dirty.Length; i++)
                 if (dirty[i])
                     BuildChunk(i % chunksX, i / chunksX);
+            SyncCovers();
         }
 
         void Stamp(GroundFeature f)
@@ -325,6 +407,8 @@ namespace BMB
                 case GroundFeatureType.Box:
                     return f.height;
                 case GroundFeatureType.Pit:
+                case GroundFeatureType.HiddenPit:
+                case GroundFeatureType.BreakableIce:
                     return -f.height;
                 case GroundFeatureType.Stairs:
                 {

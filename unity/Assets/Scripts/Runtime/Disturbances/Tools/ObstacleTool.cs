@@ -114,7 +114,7 @@ namespace BMB
             };
         }
 
-        public override void OnSelect(DisturbanceManager m) => cursor ??= new BrushCursor(Color.white);
+        public override void OnSelect(DisturbanceManager m) { if (Application.isPlaying) cursor ??= new BrushCursor(Color.white); }
         public override void OnDeselect(DisturbanceManager m) => cursor?.Hide();
 
         public override void Update(DisturbanceManager m)

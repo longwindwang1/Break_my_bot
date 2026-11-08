@@ -99,6 +99,8 @@ namespace BMB
                 controller.Fell -= OnFell;
                 controller.WasReset -= OnReset;
             }
+            if (subscribed && level != null)
+                level.CoverBroken -= OnCoverBroken;
             subscribed = false;
         }
 
@@ -108,6 +110,8 @@ namespace BMB
                 return;
             controller.Fell += OnFell;
             controller.WasReset += OnReset;
+            if (level != null)
+                level.CoverBroken += OnCoverBroken;
             subscribed = true;
         }
 
@@ -124,7 +128,7 @@ namespace BMB
             tools.Add(new PayloadTool());
             tools.Add(new FrictionTool());
             tools.Add(new ObstacleTool());
-            tools.Add(new PlaceholderTool("Deceptive terrain", NeonIconKind.Deceptive));
+            tools.Add(new DeceptiveTool());
         }
 
         /// <summary>Set by the game UI every frame: the mouse is over a UI panel, so tools ignore world clicks.</summary>
@@ -227,6 +231,8 @@ namespace BMB
                 case GroundFeatureType.Box:
                 case GroundFeatureType.Pit:
                 case GroundFeatureType.Rough:
+                case GroundFeatureType.HiddenPit:
+                case GroundFeatureType.BreakableIce:
                     f.height = Limit(Quantity.ObstacleHeight, f.height, out outside);
                     break;
                 case GroundFeatureType.Stairs:
@@ -248,9 +254,21 @@ namespace BMB
             var snapped = level.Snap(worldCentre) - level.transform.position;
             f.centre = new Vector2(snapped.x, snapped.z);
             level.Add(f);
-            Record("obstacle", $"{f.Describe()} at {FormatGround(worldCentre)}, yaw {f.yawDeg:F0}°", outside);
+            Record(f.Covered ? "deceptive" : "obstacle", $"{f.Describe()} at {FormatGround(worldCentre)}, yaw {f.yawDeg:F0}°", outside);
             return f;
         }
+
+        /// <summary>Puts every broken ice slab back.</summary>
+        public void RestoreIce()
+        {
+            if (level == null)
+                return;
+            level.RestoreCovers();
+            Record("deceptive", "broken ice restored", false);
+        }
+
+        void OnCoverBroken(DeceptiveCover cover) =>
+            Record("deceptive", $"ice broke after {cover.ContactTime:F2} s of contact ({cover.Feature.size.x:F1}×{cover.Feature.size.y:F1} m over {cover.Feature.height * 100:F0} cm)", false);
 
         /// <summary>Removes the topmost feature under a world point; false if there is none.</summary>
         public bool RemoveObstacleAt(Vector3 world)

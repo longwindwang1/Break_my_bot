@@ -30,6 +30,10 @@ namespace BMB.Tests
             Assert.GreaterOrEqual(robot, 0, "Robot layer missing");
             Assert.IsTrue(Physics.GetIgnoreLayerCollision(robot, robot), "Robot×Robot collisions must be off");
             Assert.IsFalse(Physics.GetIgnoreLayerCollision(robot, terrain), "Robot must collide with Terrain");
+            var scanOnly = LayerMask.NameToLayer(SimSettings.ScanOnlyLayer);
+            Assert.GreaterOrEqual(scanOnly, 0, "ScanOnly layer missing");
+            for (var other = 0; other < 32; other++)
+                Assert.IsTrue(Physics.GetIgnoreLayerCollision(scanOnly, other), $"ScanOnly must not collide with layer {other}");
         }
     }
 }

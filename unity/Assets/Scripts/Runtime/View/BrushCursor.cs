@@ -2,7 +2,10 @@ using UnityEngine;
 
 namespace BMB
 {
-    /// <summary>A circle drawn on the ground under the mouse (tool footprint). Created and destroyed by tools.</summary>
+    /// <summary>
+    /// A circle drawn on the ground under the mouse (tool footprint). A plain scene object (no DontSave), so it goes
+    /// away with the play-mode scene instead of lingering in the editor.
+    /// </summary>
     public sealed class BrushCursor
     {
         const int Segments = 48;
@@ -10,14 +13,14 @@ namespace BMB
 
         public BrushCursor(Color colour)
         {
-            var go = new GameObject("BrushCursor") { hideFlags = HideFlags.DontSave };
+            var go = new GameObject("BrushCursor");
             line = go.AddComponent<LineRenderer>();
             line.useWorldSpace = true;
             line.loop = true;
             line.positionCount = Segments;
             line.widthMultiplier = 0.02f;
             line.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            line.sharedMaterial = new Material(Shader.Find("Sprites/Default")) { hideFlags = HideFlags.DontSave };
+            line.sharedMaterial = new Material(Shader.Find("Sprites/Default"));
             line.startColor = line.endColor = colour;
             go.SetActive(false);
         }

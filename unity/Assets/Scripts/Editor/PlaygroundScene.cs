@@ -30,6 +30,7 @@ namespace BMB.Editor
             levelObject.SetActive(false);
             var level = levelObject.AddComponent<LevelGround>();
             level.Configure(new Vector2(LevelSize, LevelSize), W3Scenes.LevelMaterial(), W3Scenes.GroundFriction(RobotInterface.Load()));
+            level.IceMaterial = IceMaterial();
             levelObject.SetActive(true);
 
             var zones = new GameObject("FrictionZones").AddComponent<FrictionZones>();
@@ -75,6 +76,24 @@ namespace BMB.Editor
             EditorUtility.SetDirty(settings);
             AssetDatabase.SaveAssets();
             return settings;
+        }
+
+        public const string IceMaterialPath = "Assets/Game/Ice.mat";
+
+        /// <summary>Translucent pale blue for breakable-ice slabs and shards.</summary>
+        public static Material IceMaterial()
+        {
+            var material = AssetDatabase.LoadAssetAtPath<Material>(IceMaterialPath);
+            if (material == null)
+            {
+                System.IO.Directory.CreateDirectory("Assets/Game");
+                material = new Material(Shader.Find("Sprites/Default"));
+                AssetDatabase.CreateAsset(material, IceMaterialPath);
+            }
+            material.color = new Color(0.62f, 0.88f, 1f, 0.62f);
+            EditorUtility.SetDirty(material);
+            AssetDatabase.SaveAssets();
+            return material;
         }
 
         public const string OverlayMaterialPath = "Assets/Game/FrictionOverlay.mat";

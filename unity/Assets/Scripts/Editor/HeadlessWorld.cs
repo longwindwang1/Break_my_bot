@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -16,6 +17,7 @@ namespace BMB.Editor
     public sealed class HeadlessWorld : IDisposable
     {
         readonly List<Go2Controller> robots = new List<Go2Controller>();
+        readonly List<LevelGround> levels = new List<LevelGround>();
 
         public Scene Scene { get; }
         public PhysicsScene Physics { get; }
@@ -111,14 +113,18 @@ namespace BMB.Editor
             level.Configure(size, null, W3Scenes.GroundFriction(Interface));
             go.SetActive(true);
             UnityEngine.Physics.SyncTransforms();
+            levels.Add(level);
             return level;
         }
 
-        /// <summary>One physics step: every robot's control step, then the physics.</summary>
+        /// <summary>One physics step: every robot's control step and breakable-ice contact, then the physics.</summary>
         public void Step()
         {
             foreach (var r in robots)
                 r.ControlStep();
+            foreach (var level in levels)
+                foreach (var cover in level.Covers.ToArray())
+                    cover.Tick(Interface.Timing.PhysicsDt);
             Physics.Simulate(Interface.Timing.PhysicsDt);
         }
 

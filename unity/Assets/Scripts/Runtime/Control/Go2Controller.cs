@@ -158,7 +158,7 @@ namespace BMB
             terrainMask = LayerMask.GetMask(SimSettings.TerrainLayer);
             if (builder.NeedsHeightScan)
             {
-                scanner = new HeightScanner(itf.HeightScan, physics, terrainMask);
+                scanner = new HeightScanner(itf.HeightScan, physics, SimSettings.ScanMask);  // hidden-pit covers included
                 scan = new float[scanner.Count];
             }
             footDriver = new FootFrictionDriver(body, itf, footFriction) { Zones = frictionZones };
