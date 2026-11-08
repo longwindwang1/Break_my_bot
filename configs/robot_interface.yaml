@@ -206,3 +206,34 @@ world_model:
     per_policy:
       v1: {m0: -0.337515, s0: 0.266011, k: 1, h: 33.3026, spike_z: 16.1252}
       v2: {m0: -0.386372, s0: 0.2262, k: 1, h: 68.2175, spike_z: 16.3464}
+
+terrain_risk:
+  # Terrain-risk ("vision") model (W6): probability that the robot falls within h policy steps if its base is at a
+  # grid cell, facing along the grid's x axis, under a velocity command and policy. Input is only terrain height
+  # sampled by vertical ray casts (no RGB), so Isaac Lab and Unity see the same values.
+  # Deployed as export/models/go2_terrain_risk.onnx: inputs "height" [1, 1, H, W] and "cond" [1, 5], output
+  # "risk" [1, 2, H - 16, W - 16] (probabilities, horizons below). H and W are dynamic (window or whole level).
+  resolution: 0.1            # m between height samples
+  receptive_field: 17        # output cell (i, j) depends on input points i..i+16 (x), j..j+16 (y)
+  height: "terrain surface z of a vertical ray cast (world frame). Any constant offset is fine: the model is exactly invariant to it; subtract e.g. the window's centre height first for float32 precision"
+  cond: [vx, vy, wz, policy_v1, policy_v2]   # velocity command (base frame) + one-hot over world_model.policies
+  horizons_steps: [25, 50]   # risk channel 0: fall within 25 steps (0.5 s); channel 1: within 50 steps (1 s)
+  # Egocentric window: yaw-aligned grid like height_scan (x forward, y left, roll/pitch ignored), centred on the base.
+  # Point (i, j) is at (x0 + resolution * i, y0 + resolution * j) in the base yaw frame; height[0, 0, j, i]
+  # (row-major, x fastest, as height_scan ordering "xy").
+  window: {nx: 47, ny: 37, x0: -1.3, y0: -1.8}
+  # Output cell (i, j) of the window is centred at (x0 + resolution * (i + 8), y0 + resolution * (j + 8)):
+  # a 31 x 21 map over x in [-0.5, 2.5] m, y in [-1.0, 1.0] m.
+  # Proactive slowdown (experiments/w6_terrain_risk/): every update_period_s, take the max of risk channel 0 (25 steps)
+  # over the window's output cells whose centre lies within corridor.half_width of the segment from the base along the
+  # (vx, vy) command direction, 0..corridor.length m ahead (if |(vx, vy)| <= 0.1: cells within 0.4 m of the base).
+  # Use the player's original command, not the slowed one. If the max exceeds the policy's threshold, apply
+  # policies.v2.cautious_gait (|(vx, vy)| scaled down to max_lin_vel, |wz| clamped to max_ang_vel) for hold_s.
+  # The window only covers forward motion: valid for vx >= 0.3, |vy| <= 0.2, |wz| <= 0.5.
+  slowdown:
+    update_period_s: 0.2
+    hold_s: 1.0
+    corridor: {length: 1.2, half_width: 0.2}
+    # Thresholds calibrated in Isaac Lab on held-out training tiles (the risk ahead exceeds them on 20 % of frames).
+    # v1 gets null: slowing v1 down did not reduce its falls (it is clumsier at low speed).
+    threshold: {v1: null, v2: 0.00862}

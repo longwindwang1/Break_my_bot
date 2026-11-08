@@ -24,6 +24,15 @@ and adapt online.
   - **Ablation.** A dynamics model trained with ice in its data barely notices ice (0.5–17 %).
   - **Open.** Unity side: world-model buffer, surprisal + CUSUM in C#, recalibration (`docs/unity_handoff.md` §11).
     W6–8: closed-loop alarm → cautious gait (experiment 1).
+- Also done: terrain-risk ("vision") model, phase 1 (2026-11-08).
+  - **Model.** `export/models/go2_terrain_risk.onnx`, spec `terrain_risk` in the yaml. Input is ray-cast terrain height only.
+    Output is P(fall within 0.5/1 s) per cell. It is fully convolutional: the egocentric window gives a forward heat map,
+    a whole level gives a danger map.
+  - **Results** (`experiments/w6_terrain_risk/`, unseen terrain):
+    - AUROC 0.906, against 0.84 for geometric rules and 0.98 for the world-model fall head, which sees the robot's state;
+    - risk-triggered slowdown cut v2's falls per 100 m by 36–46 % for 14–24 % less speed, while random slowdown did not
+      help; v1 gets worse when slowed.
+  - **Open.** Phase 2 (visible vs hidden ice blocks); Unity side (`docs/unity_handoff.md` §12).
 - Earlier: W3 smoke test, both sides. Python: `configs/robot_interface.yaml`, ONNX export, parity tests.
   Unity (`experiments/w3_unity/`): flat, rough and v2 walk in Unity physics; verification levels 1–4 of
   `docs/unity_handoff.md` §8 pass (ONNX ≤ 2.2e-6, obs ≤ 3.6e-7, kinematics ≤ 0.006 mm); 44 EditMode tests.
@@ -49,6 +58,7 @@ Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play
 
 - **Isaac Lab**: locomotion policy (PPO), adaptation module, world model data collection
 - **PyTorch**: world model + adaptation module training
+- **Terrain-risk model** (PyTorch, `models/terrain_risk/`): fall risk ahead from ray-cast terrain height; HUD heat map + proactive slowdown
 - **Unity**: level editor, disruption controls, surprisal HUD, ghost-path preview;
   runs all three ONNX models in Unity physics (this is also our sim-to-sim transfer test)
 
@@ -56,7 +66,8 @@ Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play
 ```
 isaac/        launchers (train.py/play.py), our tasks (bmb_tasks/), training wrapper, reference recorder,
               eval_policy.py, interface.py (yaml loader, env.yaml checker, apply_to_env_cfg)
-models/       world_model/ (PyTorch): dataset (masks, labels), ensemble, train, surprisal + CUSUM, evaluate/calibrate
+models/       world_model/ (PyTorch): dataset (masks, labels), ensemble, train, surprisal + CUSUM, evaluate/calibrate;
+              terrain_risk/: height patches, fully convolutional risk net, train, evaluate
 export/       ONNX export + parity tests; deployable models in export/models/ (tracked for the Unity machine)
 unity/        Unity 6000.3.8f1 project: Assets/Scripts/{Runtime,Editor,Tests/EditMode}, Assets/Robots (URDF, Go2.prefab),
               Assets/Scenes (W3_Flat, W3_Rough)
@@ -153,6 +164,12 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
   -> `results.json`, figures, `calibration.yaml` (goes into robot_interface.yaml `world_model.surprisal`)
 - Export world model + Unity traces: `... export/export_wm_onnx.py --run logs/wm/<run> --checkpoint model_fall.pt --reference experiments/w3_reference/go2_v2.npz experiments/w3_reference/go2_v2_mudrop.npz`
   -> `export/models/go2_wm.onnx`, `experiments/w3_reference/go2_wm*.json`; tests: `... -m pytest -k wm` and `... -m pytest models`
+- Terrain-risk model:
+  - data: `collect_wm_data.py --split geo_train|geo_train2|geo_train3|geo_test` (saves `terrain_height.npy`; splits in `isaac/wm_splits.py`);
+  - train (~4 min): `... -m models.terrain_risk.train --data logs/wm_data/w6_geo_train logs/wm_data/w6_geo_train2 logs/wm_data/w6_geo_train3 --name w6_risk3`;
+  - evaluate: `... -m models.terrain_risk.evaluate --run logs/terrain_risk/<run> --train <3 dirs> --test logs/wm_data/w6_geo_test --wm_run logs/wm/<wm run> --out experiments/w6_terrain_risk`;
+  - closed-loop slowdown: `python isaac/eval_risk_slowdown.py --mode none|always|risk|random ...` (see `experiments/w6_terrain_risk/README.md`);
+  - export + Unity reference: `... export/export_risk_onnx.py --run logs/terrain_risk/<run> --reference_split logs/wm_data/w6_geo_test`.
 - Export ONNX: `~/miniforge3/envs/env_isaaclab/bin/python export/export_onnx.py --run <log_dir> --variant flat|rough|v2 [--checkpoint model_N.pt] [--opset 15]`
   → `export/models/go2_<variant>.onnx` (input `obs` [1,48|235|1360], output `actions` [1,12]; v2 exports the student;
   opset 18 default, 15 for older Unity Inference Engine versions)
