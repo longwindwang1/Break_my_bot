@@ -180,3 +180,29 @@ world_model:
   fall_horizons_steps: [10, 25, 50]
   # Timing: at policy step t, after the policy produced a_t, run the model on wm_in(t). At step t+1, score the
   # observed s_{t+1} against that prediction (world_model.surprisal).
+  # Surprisal + change detection (W5). Calibrated by models/world_model/evaluate.py (experiments/w5_surprisal/):
+  # false alarms <= 1 per target_arl_steps scored steps of clean walking in Isaac Lab, budget split between the
+  # CUSUM and the spike detector. Per state dim d (state_terms order), at step t+1 against the prediction from t:
+  #   z_d = ((s_d - state_mean_d) / sqrt(state_var_d + var_floor_d) - z_bias_d) / z_scale_d
+  #   S   = sum_d weights_d * 0.5 * (min(z_d^2, clip_z2) - 1)          (statistic "norm"; "nll" would add
+  #         log(2 pi (state_var_d + var_floor_d)) instead of -1)
+  #   x   = (S - m0) / s0;  g = max(0, g + x - k)                       (per_policy.<policy>)
+  #   spike = max over spike_dims of |z_d| > spike_z
+  #   alarm if g > h or spike; then g = 0.  g = 0 on every episode reset; nothing is scored while the
+  #   episode step < warmup_steps.
+  # z_bias / z_scale are engine corrections (identity for Isaac Lab); Unity estimates its own on clean walking
+  # (docs/unity_handoff.md section 11.4) and keeps them outside this file.
+  surprisal:
+    statistic: norm
+    clip_z2: 25
+    weights_scheme: joints     # joint_pos and joint_vel, each term weighted 1/2, split over its dims
+    weights: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667]
+    var_floor: [6.30091e-06, 5.85744e-06, 1.97464e-05, 0.00287226, 0.00092293, 0.0001024, 9.08492e-07, 1.00714e-06, 1.47349e-07, 2.50338e-05, 2.59811e-05, 1.99153e-05, 1.84715e-05, 3.07591e-05, 3.27386e-05, 2.80688e-05, 2.30429e-05, 6.58827e-05, 6.55278e-05, 7.72831e-05, 8.25093e-05, 0.025843, 0.0264748, 0.0175194, 0.0170342, 0.0398326, 0.0399313, 0.0282851, 0.0248115, 0.0858406, 0.0938769, 0.0790771, 0.0853105]   # (0.1 * delta std)^2
+    z_bias: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    z_scale: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    warmup_steps: 25
+    spike_dims: [0, 1]           # base_lin_vel x, y (pushes)
+    target_arl_steps: 30000
+    per_policy:
+      v1: {m0: -0.337515, s0: 0.266011, k: 1, h: 33.3026, spike_z: 16.1252}
+      v2: {m0: -0.386372, s0: 0.2262, k: 1, h: 68.2175, spike_z: 16.3464}

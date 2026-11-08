@@ -11,13 +11,26 @@ and adapt online.
 
 ## Current status
 - Phase: W4–5 (world model)       <!-- update at the start of every phase -->
-- Last milestone done: W3 smoke test, both sides. Python: `configs/robot_interface.yaml`, ONNX export, parity tests.
+- Last milestone done: W4–5 world model, Isaac side (2026-11-07).
+  - **Model.** `export/models/go2_wm.onnx`: 5-member Gaussian MLP ensemble. Its dynamics are trained on normal physics only, so
+    ice and pushes stay surprising; its fall head is refit on the full randomization.
+  - **Spec.** `world_model` in the yaml: input layout, outputs, surprisal and CUSUM parameters.
+  - **Unity traces.** `experiments/w3_reference/go2_wm*.json`.
+  - **Results** (`experiments/w5_surprisal/`), at 1 false alarm per 10 min of clean walking:
+    - pushes are detected in the same step (97–100 %);
+    - all-feet μ → 0.05 / 0.1 is detected within 2 s at 96 % / 81–90 %;
+    - single-foot ice is weak (21–48 %);
+    - fall prediction AUROC is 0.97–0.999, against 0.90–0.95 for a tilt baseline.
+  - **Ablation.** A dynamics model trained with ice in its data barely notices ice (0.5–17 %).
+  - **Open.** Unity side: world-model buffer, surprisal + CUSUM in C#, recalibration (`docs/unity_handoff.md` §11).
+    W6–8: closed-loop alarm → cautious gait (experiment 1).
+- Earlier: W3 smoke test, both sides. Python: `configs/robot_interface.yaml`, ONNX export, parity tests.
   Unity (`experiments/w3_unity/`): flat, rough and v2 walk in Unity physics; verification levels 1–4 of
   `docs/unity_handoff.md` §8 pass (ONNX ≤ 2.2e-6, obs ≤ 3.6e-7, kinematics ≤ 0.006 mm); 44 EditMode tests.
-  Unity vs Isaac gait statistics in `experiments/w3_unity/trials.md` (Unity's gait period 15–18 % longer for flat/v2).
-  Robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student) done: `export/models/go2_v2.onnx` (student, 1360-d input),
-  parity tests pass; at foot μ 0.1 it survives 90 % vs 52 % for v1 (`experiments/v2_eval/`).
-  Open: pit / deceptive-scan test does not discriminate (pits too shallow); pushes not better than v1.
+  Unity vs Isaac gait statistics are in `experiments/w3_unity/trials.md` (Unity's gait period is 15–18 % longer for flat/v2).
+  Robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student): `export/models/go2_v2.onnx` (student, 1360-d input).
+  At foot μ 0.1 it survives 90 % vs 52 % for v1 (`experiments/v2_eval/`).
+  Open: the pit / deceptive-scan test does not discriminate (pits too shallow); pushes are not better than v1.
 
 ## Two machines (this file is shared by both)
 - **Linux** (training): Isaac Lab, PyTorch, ONNX export, parity tests. Every command under "Commands" assumes it.
@@ -130,14 +143,15 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
 - Play: `PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/play.py --task <...-Play[-v0]> --load_run <time>_<run> --checkpoint model_N.pt`
   (also writes Isaac Lab's own `<log_dir>/exported/policy.onnx`; the models Unity uses come from `export/export_onnx.py`)
 - TensorBoard: `~/miniforge3/envs/env_isaaclab/bin/tensorboard --logdir logs/rsl_rl`
-- Collect world model data (one split per process: train / clean / events / events_pits; ~2-7 min each, 8 GB total):
-  `PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/collect_wm_data.py --split train --v2 <student ckpt> --v1 <v1 rough ckpt> --out_dir logs/wm_data/w4_train`
-  (see `experiments/w4_wm_data/README.md` for the exact checkpoints; `--num_envs 256 --steps 160 --event_step 50` for a smoke run)
-- Train world model (~37 min, 5-member ensemble): `~/miniforge3/envs/env_isaaclab/bin/python -m models.world_model.train --data logs/wm_data/w4_train --name w4_wm`
-  -> `logs/wm/<time>_<name>/model.pt`
-- Evaluate + calibrate surprisal/CUSUM: `... -m models.world_model.evaluate --run logs/wm/<run> --data logs/wm_data --out experiments/w5_surprisal`
-  -> `results.json`, figures, `calibration.yaml` (paste into robot_interface.yaml `world_model.surprisal`)
-- Export world model + Unity traces: `... export/export_wm_onnx.py --run logs/wm/<run> --reference experiments/w3_reference/go2_v2.npz experiments/w3_reference/go2_v2_mudrop.npz`
+- Collect world model data (one split per process: train / train_nominal / clean / events / events_pits; 1-7 min each, ~12 GB):
+  `PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/collect_wm_data.py --split train_nominal --v2 <student ckpt> --v1 <v1 rough ckpt> --out_dir logs/wm_data/w4_train_nominal`
+  (exact checkpoints in `experiments/w4_wm_data/README.md`; `--num_envs 256 --steps 160 --event_step 50` for a smoke run)
+- Train world model (~37 min) and refit its fall head on the full randomization (~1 min):
+  `~/miniforge3/envs/env_isaaclab/bin/python -m models.world_model.train --data logs/wm_data/w4_train_nominal --name w4_wm_nominal`,
+  then `... -m models.world_model.refit_fall --run logs/wm/<run> --data logs/wm_data/w4_train` -> `logs/wm/<run>/model_fall.pt`
+- Evaluate + calibrate surprisal/CUSUM (~12 min): `... -m models.world_model.evaluate --run logs/wm/<run> --checkpoint model_fall.pt --data logs/wm_data --out experiments/w5_surprisal`
+  -> `results.json`, figures, `calibration.yaml` (goes into robot_interface.yaml `world_model.surprisal`)
+- Export world model + Unity traces: `... export/export_wm_onnx.py --run logs/wm/<run> --checkpoint model_fall.pt --reference experiments/w3_reference/go2_v2.npz experiments/w3_reference/go2_v2_mudrop.npz`
   -> `export/models/go2_wm.onnx`, `experiments/w3_reference/go2_wm*.json`; tests: `... -m pytest -k wm` and `... -m pytest models`
 - Export ONNX: `~/miniforge3/envs/env_isaaclab/bin/python export/export_onnx.py --run <log_dir> --variant flat|rough|v2 [--checkpoint model_N.pt] [--opset 15]`
   → `export/models/go2_<variant>.onnx` (input `obs` [1,48|235|1360], output `actions` [1,12]; v2 exports the student;
@@ -173,7 +187,7 @@ Unity (Windows; editor menu or MCP `execute_menu_item`):
 ## Milestones
 - [x] W1–2 Baseline: Isaac Lab setup, Go2 PPO policy, measure VRAM/speed locally
 - [x] W3 Smoke test: flat-ground policy running in Unity, interface parity verified (also rough and v2)
-- [ ] W4–5 World model: data collection, ensemble training, surprisal + CUSUM
+- [x] W4–5 World model: data collection, ensemble training, surprisal + CUSUM (Isaac side; Unity integration pending)
 - [ ] W6–8 Game: adaptation trigger, level editor, disruptions, HUD, ghost path
 - [ ] W9–10 Results: 3 experiments, demo video, report
 

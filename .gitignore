@@ -3,7 +3,7 @@ logs/
 outputs/
 *.pt
 *.onnx
-# ...except the deployable models the Unity machine needs (small: < 2 MB each)
+# ...except the deployable models the Unity machine needs (policies < 4 MB, world model ~17 MB)
 !export/models/*.onnx
 *.ckpt
 

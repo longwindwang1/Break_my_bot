@@ -2,7 +2,7 @@
 
 For the Claude Code instance working on the **Unity side** on a separate machine. Training and export
 run on a Linux machine (Isaac Lab); results reach you through this repo. Read `CLAUDE.md` too. This file
-covers what you need for Unity. Last updated 2026-11-05.
+covers what you need for Unity. Last updated 2026-11-07.
 
 Sync: `git clone https://github.com/longwindwang1/Break_my_bot.git` (branch `main`). Put the Unity project in
 `unity/`; `.gitignore` already excludes Unity's Library/Temp/Obj/Build/Logs/UserSettings. Commit Unity work
@@ -35,7 +35,8 @@ Working rules that apply to you:
 | W3 smoke test, Python side | Done. Interface yaml, ONNX export, parity tests (Isaac ↔ ONNX) all pass |
 | W3 smoke test, Unity side | Done (2026-11-07). Flat, rough and v2 walk in Unity; §8 levels 1–4 pass. Results, model notes and open questions: `experiments/w3_unity/README.md` |
 | Robust policy v2 | Trained (friction/ice, pushes, payload, hidden pits). `export/models/go2_v2.onnx` and reference `go2_v2.json` are in the repo; parity tests pass (see §9). Runs in Unity (`W3_Rough` scene) |
-| W4–5 world model, W6–8 game, W9–10 results | Later |
+| W4–5 world model | Trained and exported: `export/models/go2_wm.onnx`, spec in the yaml `world_model`, Unity reference traces `go2_wm*.json`. See §11. Needs its own buffer, surprisal + CUSUM in C#, and a Unity recalibration |
+| W6–8 game, W9–10 results | Later |
 
 ## 3. Your task: W3 Unity smoke test
 
@@ -218,3 +219,73 @@ Specified in `configs/robot_interface.yaml` under `policies.v2`.
 - v1 rough requires the height scan. Without correct raycasts it will behave badly.
 - base_lin_vel is not directly measurable on the real robot. That's fine in simulation.
 - If anything in this file disagrees with `configs/robot_interface.yaml` or `export/test_parity.py`, those win. Tell the user so this file gets fixed.
+
+## 11. World model (W4–5, available)
+A learned dynamics monitor that runs next to the policy at 50 Hz and **never produces actions**.
+- The dynamics part is trained on **normal physics only** (foot μ 0.6–1.25, no pushes), so ice, pushes and hidden pits stay surprising.
+- The fall head was refit on the full randomization, ice and pushes included.
+- At policy step t it predicts the next state s_{t+1}, the base displacement and the fall probability.
+- At step t+1 the observed state is scored against that prediction (surprisal). A CUSUM over the scores raises an alarm on a physics change: ice, a push, or a hidden pit.
+- Spec: `configs/robot_interface.yaml` → `world_model` (input layout, outputs, surprisal and CUSUM parameters).
+- Training and evaluation notes: `experiments/w4_wm_data/`, `experiments/w4_wm_ensemble/`, `experiments/w5_surprisal/`.
+
+| Path | What |
+|---|---|
+| `export/models/go2_wm.onnx` | Input `wm_in` [1, 471]. Outputs `state_mean`, `state_var` [1, 33]; `disp_mean`, `disp_var` [1, 4]; `fall_prob` [1, 3]; `disagreement` [1, 1]. Opset 18, about 17 MB. The 5 ensemble members are unrolled into Gemm chains; it also uses Sigmoid, Mul, Exp, Softplus, ReduceMean, Gather and Concat |
+| `experiments/w3_reference/go2_wm.json` | Every step of the v2 reference rollout (`go2_v2.json`): `wm_in`, all six outputs, `z`, `S`, `x`, `scored`, `spike`, `g`, `alarm`. Clean rollout: no alarm |
+| `experiments/w3_reference/go2_wm_mudrop.json` (+ `go2_v2_mudrop.json`) | Same format; the foot friction drops to 0.05 at `friction_drop.at_step` |
+
+### 11.1 Input `wm_in` (471 = 270 + 12 + 187 + 2)
+1. **History (270).** The world model's **own** buffer of 6 frames: the current frame and the 5 before it.
+   - A frame is the 45-d proprioception: `base_lin_vel`, `base_ang_vel`, `projected_gravity`, `joint_pos`, `joint_vel`, `actions` (the previous action), with the definitions in §5.5.
+   - Flatten term by term, each term oldest → newest, exactly like the v2 `proprio_history` (§9) but with 6 frames.
+   - On an episode reset, fill all 6 slots with the first frame.
+   - **Do not clear it on a surprisal alarm.** Only the policy's adaptation history is cleared on an alarm. Clearing this buffer too would feed the model copied frames mid-stride and trigger the next alarm.
+   - Keep this buffer for v1 too (v1 has no history of its own).
+2. **Action (12).** a_t, the raw output the policy just produced for this step.
+3. **Height scan (187).** The height-scan term of this step (§5.6).
+4. **Policy one-hot (2).** `[v1, v2]`, in the order of `world_model.policies`. Only the fall head reads it.
+
+### 11.2 Per policy step
+```
+obs_t  = BuildObs(...)                 // as now
+a_t    = policy(obs_t)
+if step_in_episode > 0: score(s_t)     // s_t = first 33 dims of the current frame (state_terms)
+wm_buffer.push(frame_t)                // after a reset: fill all 6 slots
+pred   = world_model(wm_in(wm_buffer, a_t, scan_t, onehot))   // keep state_mean, state_var for the next step
+```
+Scoring s_{t+1} against the prediction from step t (`world_model.surprisal` in the yaml):
+```
+z_d = ((s_d - state_mean_d) / sqrt(state_var_d + var_floor_d) - z_bias_d) / z_scale_d
+S   = sum_d weights_d * 0.5 * (min(z_d^2, clip_z2) - 1)                       // statistic "norm"
+      (statistic "nll": 0.5 * (min(z_d^2, clip_z2) + log(2 pi (state_var_d + var_floor_d))) instead)
+x     = (S - m0) / s0                  // m0, s0, k, h, spike_z: per_policy.<policy>
+g     = max(0, g + x - k)
+spike = max over d in spike_dims of |z_d| > spike_z      // spike_dims = base_lin_vel x, y: pushes
+if g > h or spike: ALARM, g = 0
+```
+- g = 0 on every episode reset.
+- Nothing is scored while the episode step is below `warmup_steps`.
+- On an alarm (W6–8):
+  - clear the **policy's** adaptation history (§9) by filling it with the current frame;
+  - switch to the cautious gait;
+  - leave the world-model buffer alone.
+
+### 11.3 Verification (same idea as §8)
+1. **ONNX.** Feed `go2_wm.json`'s `wm_in` rows and compare all six outputs.
+   - Tolerance: `state_mean` and `disp_mean` 1e-4 absolute; the variance outputs and `disagreement` 1e-3 relative.
+2. **Input builder.** Build `wm_in` from the `go2_v2.json` reference state with your C# code. Compare with `go2_wm.json` `wm_in` (1e-5).
+3. **Surprisal and CUSUM.** From the stored states and outputs, compute `z`, `S`, `x`, `spike`, `g` and `alarm` and compare (1e-5; `spike` and `alarm` exactly).
+   - `go2_wm.json` must stay alarm-free.
+   - `go2_wm_mudrop.json` shows what the Isaac model does after the friction drop.
+4. **Closed loop in Unity**, with the recalibration below.
+
+### 11.4 Recalibration in Unity (expected to be necessary)
+- **Why.** The thresholds were set on Isaac Lab data for one false alarm per `target_arl_steps` steps (10 min) of clean walking. Unity's physics differs: W3 measured a 15–18 % longer gait period. So in Unity the residuals are larger and shaped differently per dim, and the Isaac thresholds will raise false alarms.
+- **Procedure.** Calibrate on clean walking in Unity: varied commands, flat and rough ground, μ ≥ 0.6, no pushes.
+  1. Log z_d over at least 20 min of simulated walking. Headless stepping can run faster than real time.
+  2. Set `z_bias_d` = median(z_d) and `z_scale_d` = 1.4826 · MAD(z_d).
+  3. Recompute m0 and s0 of S with the corrected z. Keep k.
+  4. Set `spike_z` to the 1 − 1/(2 · `target_arl_steps`) quantile of the spike statistic.
+  5. Choose h as the smallest value with at most 1 alarm (CUSUM or spike) per `target_arl_steps` scored steps on that log. To be credible this needs at least 2 × `target_arl_steps` scored steps.
+- **Where to store it.** Write the values to `experiments/w3_unity/wm_calibration_unity.json`, which the runtime prefers over the yaml values. Do not edit the yaml. Report the per-dim bias and scale: they are data for experiment 3.

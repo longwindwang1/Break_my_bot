@@ -9,6 +9,18 @@ The W3 Unity observation builder must rebuild `obs` from its own state the same 
 | `go2_flat.npz`  | `w1_go2_flat_baseline/model_299.pt`   | `Isaac-Velocity-Flat-Unitree-Go2-Play-v0`  | plane | (0.5, 0, 0) |
 | `go2_rough.npz` | `w1_go2_rough_baseline/model_1499.pt` | `Isaac-Velocity-Rough-Unitree-Go2-Play-v0` | `random_rough` only (0–6 cm relief) | (0.5, 0, 0) |
 | `go2_v2.npz` | `v2_student/model_999.pt` (deployed student) | `BMB-Go2-Rough-v2-Play` | `random_rough` only, foot μ fixed at 1.0 | (0.5, 0, 0) |
+| `go2_v2_mudrop.npz` | same as `go2_v2` | `BMB-Go2-Rough-v2-Play` | as `go2_v2`, but every foot's μ is set to 0.05 at step 250 (`friction_drop_step`; extra field `foot_mu` [T, 4]) | (0.5, 0, 0) |
+
+World-model traces (W5, `export/export_wm_onnx.py --reference`), for checking Unity's world-model input builder, ONNX
+outputs and surprisal / CUSUM step by step (`docs/unity_handoff.md` §11):
+- `go2_wm.json` is computed from `go2_v2.npz`. Clean, so no alarm is expected.
+- `go2_wm_mudrop.json` is computed from `go2_v2_mudrop.npz`. The first alarm comes 12 steps after the drop.
+
+Fields, each `{"shape", "data"}`:
+- `wm_in` [T, 471] and the six model outputs;
+- `episode_step`;
+- `z` [T, 33], `S`, `x`, `scored`, `spike`, `g`, `alarm` [T];
+- `source`, `policy`, `friction_drop`.
 
 Each covers 500 policy steps (10 s), 1 env, seed 0, clean observations (Play config), and the command is fixed (heading mode off, no resampling). None of the rollouts resets partway through.
 
@@ -24,6 +36,11 @@ PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/record_reference.py \
   --task BMB-Go2-Rough-v2-Play --agent rsl_rl_distillation_cfg_entry_point \
   --load_run 2026-11-06_16-34-51_v2_student --checkpoint model_999.pt \
   --sub_terrain random_rough --foot_friction 1.0 --out experiments/w3_reference/go2_v2.npz
+PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/record_reference.py \
+  --task BMB-Go2-Rough-v2-Play --agent rsl_rl_distillation_cfg_entry_point \
+  --load_run 2026-11-06_16-34-51_v2_student --checkpoint model_999.pt \
+  --sub_terrain random_rough --foot_friction 1.0 --friction_drop_at 5.0 --friction_drop_to 0.05 \
+  --out experiments/w3_reference/go2_v2_mudrop.npz
 ```
 For v2 the recorder also turns off payload, COM and gain randomization, pushes and scan deception, so the robot is the nominal one.
 `--sub_terrain` is needed for rough because the stairs/boxes sub-terrains spawn the robot on a flat platform,
