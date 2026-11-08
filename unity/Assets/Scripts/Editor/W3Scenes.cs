@@ -126,10 +126,29 @@ namespace BMB.Editor
                     case float f: p.floatValue = f; break;
                     case int i: p.intValue = i; break;
                     case string s: p.stringValue = s; break;
+                    case Vector2 v: p.vector2Value = v; break;
                     default: throw new System.ArgumentException($"unsupported value for {field}");
                 }
             }
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        const string LevelMaterialPath = TerrainDir + "/Level.mat";
+
+        /// <summary>Checker (1 m squares from the mesh UVs) for LevelGround meshes.</summary>
+        public static Material LevelMaterial()
+        {
+            var material = AssetDatabase.LoadAssetAtPath<Material>(LevelMaterialPath);
+            if (material == null)
+            {
+                material = new Material(GroundMaterial());
+                AssetDatabase.CreateAsset(material, LevelMaterialPath);
+            }
+            material.SetTexture("_BaseMap", AssetDatabase.LoadAssetAtPath<Texture2D>(CheckerPath));
+            material.SetTextureScale("_BaseMap", Vector2.one);
+            material.SetColor("_BaseColor", Color.white);
+            EditorUtility.SetDirty(material);
+            return material;
         }
 
         /// <summary>Same checker as the ground, tinted, so the rough patch stands out.</summary>

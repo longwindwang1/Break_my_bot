@@ -88,13 +88,30 @@ namespace BMB.Editor
         }
 
         /// <summary>A disturbance manager (with its own friction map) for one robot, ready for API calls.</summary>
-        public DisturbanceManager AddDisturbances(Go2Controller robot, bool hardMode = false)
+        public DisturbanceManager AddDisturbances(Go2Controller robot, bool hardMode = false, LevelGround level = null)
         {
             var zones = Add(new GameObject($"FrictionZones_{robot.name}")).AddComponent<FrictionZones>();
             var manager = Add(new GameObject($"Disturbances_{robot.name}")).AddComponent<DisturbanceManager>();
-            manager.Configure(robot, DisturbanceLimits.CreateDefault(), null, zones);
+            manager.Configure(robot, DisturbanceLimits.CreateDefault(), null, zones, level);
             manager.HardMode = hardMode;
             return manager;
+        }
+
+        /// <summary>
+        /// Editable heightfield ground (Terrain layer, terrain friction) centred at <paramref name="centre"/>.
+        /// Create the world with flatGround = false, or the flat ground would fill its pits.
+        /// </summary>
+        public LevelGround AddLevelGround(Vector2 size, Vector3 centre = default)
+        {
+            var go = Add(new GameObject("LevelGround"));
+            go.SetActive(false);  // build once, on enable, with the final settings
+            go.layer = TerrainLayer;
+            go.transform.position = centre;
+            var level = go.AddComponent<LevelGround>();
+            level.Configure(size, null, W3Scenes.GroundFriction(Interface));
+            go.SetActive(true);
+            UnityEngine.Physics.SyncTransforms();
+            return level;
         }
 
         /// <summary>One physics step: every robot's control step, then the physics.</summary>

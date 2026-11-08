@@ -19,6 +19,7 @@ namespace BMB
         [SerializeField] DisturbanceLimits limits;
         [SerializeField] Camera viewCamera;
         [SerializeField] FrictionZones frictionZones;
+        [SerializeField] LevelGround level;
         [Tooltip("Allow values beyond the v2 training ranges (flagged in the HUD and the log)")]
         [SerializeField] bool hardMode;
         [Tooltip("Write the event log to unity/Logs/disturbances_<time>.csv when play mode ends")]
@@ -33,6 +34,7 @@ namespace BMB
         public DisturbanceLimits Limits => limits;
         public Camera ViewCamera => viewCamera;
         public FrictionZones Zones => frictionZones;
+        public LevelGround Level => level;
         public IReadOnlyList<DisturbanceTool> Tools => tools;
         public DisturbanceTool ActiveTool { get; private set; }
         /// <summary>Extra HUD lines (payload, foot friction, …) contributed by subsystems.</summary>
@@ -51,12 +53,14 @@ namespace BMB
         }
 
         /// <summary>Wiring for code-built setups (headless runs, tests).</summary>
-        public void Configure(Go2Controller robotController, DisturbanceLimits disturbanceLimits, Camera camera = null, FrictionZones zones = null)
+        public void Configure(Go2Controller robotController, DisturbanceLimits disturbanceLimits, Camera camera = null,
+                              FrictionZones zones = null, LevelGround levelGround = null)
         {
             controller = robotController;
             limits = disturbanceLimits;
             viewCamera = camera;
             frictionZones = zones;
+            level = levelGround;
             if (zones != null && controller != null)
                 controller.Zones = zones;
             EnsureInitialized();
@@ -119,7 +123,7 @@ namespace BMB
             tools.Add(new PlaceholderTool("Ball"));
             tools.Add(new PayloadTool());
             tools.Add(new FrictionTool());
-            tools.Add(new PlaceholderTool("Obstacle"));
+            tools.Add(new ObstacleTool());
             tools.Add(new PlaceholderTool("Deceptive terrain"));
         }
 
@@ -198,6 +202,67 @@ namespace BMB
             if (controller != null && controller.Zones != frictionZones)
                 controller.Zones = frictionZones;
             return frictionZones;
+        }
+
+        // --- disturbances: obstacles ------------------------------------------------------------------------------
+
+        /// <summary>
+        /// Adds a ground feature at a world point, its size parameter clamped to the active limits (box / pit / rough:
+        /// obstacle height; stairs: step height; ramp: slope). Stairs and ramps get their natural length, Isaac tiles
+        /// are 8 m with yaw in multiples of 90°. Returns the feature added to <see cref="Level"/>.
+        /// </summary>
+        public GroundFeature PlaceObstacle(GroundFeature f, Vector3 worldCentre)
+        {
+            if (level == null)
+                throw new InvalidOperationException("no LevelGround to place obstacles on");
+            var outside = false;
+            switch (f.type)
+            {
+                case GroundFeatureType.Box:
+                case GroundFeatureType.Pit:
+                case GroundFeatureType.Rough:
+                    f.height = Limit(Quantity.ObstacleHeight, f.height, out outside);
+                    break;
+                case GroundFeatureType.Stairs:
+                    f.height = Limit(Quantity.StairStep, f.height, out outside);
+                    f.steps = Mathf.Max(1, f.steps);
+                    break;
+                case GroundFeatureType.Ramp:
+                    f.slopeDeg = Limit(Quantity.Slope, f.slopeDeg * Mathf.Deg2Rad, out outside) * Mathf.Rad2Deg;
+                    break;
+                case GroundFeatureType.IsaacTile:
+                    f.difficulty = Mathf.Clamp01(f.difficulty);
+                    f.yawDeg = Mathf.Round(f.yawDeg / 90f) * 90f;
+                    f.size = new Vector2(IsaacTiles.Size, IsaacTiles.Size);
+                    break;
+            }
+            var length = GroundFeature.NaturalLength(f.type, f.steps, f.RampLength);
+            if (length > 0f)
+                f.size = new Vector2(f.type == GroundFeatureType.IsaacTile ? IsaacTiles.Size : f.size.x, length);
+            var snapped = level.Snap(worldCentre) - level.transform.position;
+            f.centre = new Vector2(snapped.x, snapped.z);
+            level.Add(f);
+            Record("obstacle", $"{f.Describe()} at {FormatGround(worldCentre)}, yaw {f.yawDeg:F0}°", outside);
+            return f;
+        }
+
+        /// <summary>Removes the topmost feature under a world point; false if there is none.</summary>
+        public bool RemoveObstacleAt(Vector3 world)
+        {
+            var f = level != null ? level.FeatureAt(world) : null;
+            if (f == null)
+                return false;
+            level.Remove(f.id);
+            Record("obstacle", $"removed {f.Describe()}", false);
+            return true;
+        }
+
+        public void ClearObstacles()
+        {
+            if (level == null)
+                return;
+            level.Clear();
+            Record("obstacle", "all obstacles removed", false);
         }
 
         static string FormatGround(Vector3 unityPoint)
