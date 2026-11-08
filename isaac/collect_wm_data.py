@@ -4,14 +4,7 @@ One split per process. Env i is driven by policy (v2, v2, v1)[i % 3]; in the tra
 (i % 4 == 0) also gets Gaussian action noise. All disturbances (friction changes, pushes, events, scan
 deception) are scheduled by this script and flagged per step, so the dataset can mask them exactly.
 
-Splits:
-  train        full v2 randomization: foot mu 0.05-1.25 changing every 4-8 s (half single-foot), pushes of
-               0-1.0 m/s in a random direction every 5-10 s, full terrain mix, difficulty 0-1
-  train_nominal  "normal physics" only: as clean, plus action noise on every 4th env (surprisal model)
-  clean        mu fixed per episode in [0.6, 1.25], no pushes, no noise; same terrain   (threshold calibration)
-  events       clean conditions, difficulty 0-0.5; at --event_step every env gets one event (EVENTS[i % 7])
-  events_pits  pit terrain only, pits 15-30 cm; from --event_step the height scan reports flat ground in
-               about half of the envs (deceived flag)
+Splits (sizes, seeds, conditions): isaac/wm_splits.py.
 
 Per policy step t the files hold o_t (and the pose / friction / tile it was computed from), the action a_t,
 and the done flags of the step a_t was applied in. Layout [T, N, ...] .npy memmaps + meta.json.
@@ -33,17 +26,10 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-SPLITS = {
-    "train": dict(num_envs=4096, steps=1500, seed=100),
-    "train_nominal": dict(num_envs=4096, steps=1500, seed=500),
-    "clean": dict(num_envs=2048, steps=1500, seed=200),
-    "events": dict(num_envs=4096, steps=600, seed=300),
-    "events_pits": dict(num_envs=2048, steps=600, seed=400),
-}
-EVENTS = ["none", "mu_0.3", "mu_0.1", "mu_0.05", "foot_0.05", "push_0.5", "push_1.0"]  # id = index
-POLICY_PATTERN = ["v2", "v2", "v1"]  # env i -> POLICY_PATTERN[i % 3]
-POLICY_IDS = {"v1": 0, "v2": 1}  # world-model policy one-hot order (robot_interface.yaml world_model.policies)
+sys.path.insert(0, str(REPO_ROOT))
+from isaac.wm_splits import (  # noqa: E402  (no isaaclab imports at module level)
+    EVENTS, GEO_SPLITS, NOISY_SPLITS, POLICY_IDS, POLICY_PATTERN, SPLITS, TILES, configure, install_tile_logger,
+)
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--split", required=True, choices=list(SPLITS))
@@ -56,6 +42,7 @@ parser.add_argument("--event_step", type=int, default=200, help="events / events
 parser.add_argument("--action_noise", type=float, default=0.1, help="train splits: noise std on every 4th env")
 parser.add_argument("--check_envs", type=int, default=8, help="also record obs['proprio_history'] for the first N envs")
 parser.add_argument("--out_dir", default=None, help="default: logs/wm_data/<split>_<time>")
+parser.add_argument("--height_map", action="store_true", help="also save the terrain height map (always for geo splits)")
 args_cli, _ = parser.parse_known_args()
 for k, v in SPLITS[args_cli.split].items():
     if getattr(args_cli, k) is None:
@@ -72,69 +59,13 @@ import gymnasium as gym  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
-sys.path.insert(0, str(REPO_ROOT))
-from isaaclab.managers import EventTermCfg  # noqa: E402
-from isaaclab.terrains import TerrainGenerator  # noqa: E402
-
 import isaac.bmb_tasks  # noqa: E402, F401
-from isaac.bmb_tasks import mdp  # noqa: E402
-from isaac.bmb_tasks.go2_v2_env_cfg import Go2V2EnvCfg_PLAY  # noqa: E402
+from isaac.bmb_tasks.go2_v2_env_cfg import FEET, Go2V2EnvCfg_PLAY  # noqa: E402
 from isaac.bmb_tasks.mdp import state as bmb_state  # noqa: E402
 from isaac.policy_loader import load_policy, policy_input  # noqa: E402
+from isaac.terrain_map import raycast_height_map  # noqa: E402
 
-# --- terrain bookkeeping: (row, col) -> (sub-terrain name, difficulty) ------------------------------
-TILES: dict[tuple[int, int], tuple[str, float]] = {}
-_get_mesh, _add_sub = TerrainGenerator._get_terrain_mesh, TerrainGenerator._add_sub_terrain
-
-
-def _get_mesh_logged(self, difficulty, cfg):
-    self._bmb_last = (next(k for k, v in self.cfg.sub_terrains.items() if v is cfg), float(difficulty))
-    return _get_mesh(self, difficulty, cfg)
-
-
-def _add_sub_logged(self, mesh, origin, row, col, sub_terrain_cfg):
-    TILES[(int(row), int(col))] = self._bmb_last
-    return _add_sub(self, mesh, origin, row, col, sub_terrain_cfg)
-
-
-TerrainGenerator._get_terrain_mesh = _get_mesh_logged
-TerrainGenerator._add_sub_terrain = _add_sub_logged
-
-
-def configure(cfg: Go2V2EnvCfg_PLAY) -> None:
-    split = args_cli.split
-    cfg.scene.num_envs = args_cli.num_envs
-    cfg.seed = args_cli.seed
-    cfg.commands.base_velocity.debug_vis = False
-    cfg.curriculum.terrain_levels = None  # envs keep their tile; the generator has no curriculum anyway
-    gen = cfg.scene.terrain.terrain_generator
-    gen.num_rows, gen.num_cols = 10, 20
-    gen.curriculum = False
-    gen.difficulty_range = (0.0, 1.0)
-    ev = cfg.events
-    ev.foot_friction_change = None  # mid-episode changes are scheduled by this script
-    ev.push = None
-    ev.scan_deception = None
-    fr = ev.foot_friction_reset.params
-    if split == "train":
-        fr["lower_start"], fr["lower_end"], fr["upper"] = 0.05, 0.05, 1.25
-    else:
-        fr["lower_start"], fr["lower_end"], fr["upper"] = 0.6, 0.6, 1.25
-    if split == "events":
-        gen.difficulty_range = (0.0, 0.5)
-    if split == "events_pits":
-        pits = gen.sub_terrains["pits"]
-        pits.proportion = 1.0
-        pits.obstacle_height_range = (0.15, 0.30)  # eval only: deeper than training (4-16 cm)
-        gen.sub_terrains = {"pits": pits}
-        gen.difficulty_range = (0.5, 1.0)
-        t0 = (args_cli.event_step + 0.5) * cfg.sim.dt * cfg.decimation  # floor(t0 / step_dt) == event_step
-        ev.scan_deception = EventTermCfg(
-            func=mdp.schedule_scan_deception,
-            mode="reset",
-            params={"prob": 0.5, "duration_s": (1.0e3, 1.0e3), "start_s": (t0, t0), "pit_sub_terrain": "pits"},
-        )
-
+install_tile_logger()
 
 def git_hash() -> str:
     try:
@@ -151,10 +82,11 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = Go2V2EnvCfg_PLAY()
-    configure(cfg)
+    configure(cfg, args_cli.split, N, args_cli.seed, args_cli.event_step)
     env = gym.make("BMB-Go2-Rough-v2-Play", cfg=cfg).unwrapped
     device = env.device
     robot = env.scene["robot"]
+    foot_ids, _ = robot.find_bodies(FEET, preserve_order=True)
     terrain = env.scene.terrain
     gen = cfg.scene.terrain.terrain_generator
     tile_size = float(gen.size[0])
@@ -167,7 +99,7 @@ def main():
     masks = {p: torch.tensor([o == p for o in owner], device=device) for p in nets}
     policy_id = np.array([POLICY_IDS[o] for o in owner], dtype=np.int8)
     noise_std = torch.zeros(N, device=device)
-    if args_cli.split in ("train", "train_nominal"):
+    if args_cli.split in NOISY_SPLITS:
         noise_std[env_idx % 4 == 0] = args_cli.action_noise
     event_type = (env_idx % len(EVENTS)) if args_cli.split == "events" else torch.zeros(N, dtype=torch.long, device=device)
 
@@ -194,6 +126,7 @@ def main():
         "action": ((12,), np.float32),  # a_t actually applied (incl. noise)
         "root_pos": ((3,), np.float32),
         "root_quat": ((4,), np.float32),  # (w, x, y, z)
+        "feet_pos": ((4, 3), np.float32),  # world positions of the 4 feet (policy foot order FL, FR, RL, RR)
         "foot_mu": ((4,), np.float16),
         "episode_step": ((), np.int16),  # env.episode_length_buf when o_t was computed (0 = first frame)
         "tile": ((), np.int16),  # row * num_cols + col of the tile under the base, -1 on the border
@@ -223,7 +156,7 @@ def main():
         "policy_pattern": POLICY_PATTERN,
         "policy_ids": POLICY_IDS,
         "checkpoints": {"v2": args_cli.v2, "v1": args_cli.v1},
-        "action_noise": args_cli.action_noise if args_cli.split in ("train", "train_nominal") else 0.0,
+        "action_noise": args_cli.action_noise if args_cli.split in NOISY_SPLITS else 0.0,
         "git": git_hash(),
         "terrain": {
             "num_rows": gen.num_rows,
@@ -312,6 +245,7 @@ def main():
             mm["action"][t] = actions.cpu().numpy()
             mm["root_pos"][t] = robot.data.root_pos_w.cpu().numpy()
             mm["root_quat"][t] = robot.data.root_quat_w.cpu().numpy()
+            mm["feet_pos"][t] = robot.data.body_pos_w[:, foot_ids].cpu().numpy()
             mm["foot_mu"][t] = bmb_state.foot_friction(env).cpu().numpy().astype(np.float16)
             mm["episode_step"][t] = env.episode_length_buf.cpu().numpy().astype(np.int16)
             mm["tile"][t] = tile.cpu().numpy().astype(np.int16)
@@ -344,6 +278,11 @@ def main():
     info = dict(np.load(out_dir / "env_info.npz"))
     info["reset_before_event"] = ever_done.cpu().numpy()
     np.savez(out_dir / "env_info.npz", **info)
+    if args_cli.split in GEO_SPLITS or args_cli.height_map:
+        hmap, hmeta = raycast_height_map(gen, device=device)
+        np.save(out_dir / "terrain_height.npy", hmap)
+        meta["height_map"] = hmeta
+        print(f"[collect] height map {hmap.shape} res {hmeta['res']} m, misses {hmeta['misses']}", flush=True)
     meta["last_action_mismatch"] = last_action_mismatch
     meta["falls"] = int(np.asarray(mm["terminated"]).sum())
     meta["timeouts"] = int(np.asarray(mm["truncated"]).sum())
