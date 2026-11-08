@@ -18,7 +18,7 @@ python isaac/eval_summary.py experiments/v2_eval/results.jsonl   # prints the ta
 ```
 
 Setup:
-- `Go2V2EnvCfg_PLAY`: no observation noise, no payload/COM/gain randomization during play.
+- `Go2V2EnvCfg_PLAY`: no observation noise, no scan deception, and no pushes except in the push scenario. Payload, COM and gain randomization stay on, as in training.
 - Terrain: 10 × 10 tiles of the full mix, difficulty 0–0.5.
 - Commands: the training distribution, |v| ≤ 1 m/s.
 

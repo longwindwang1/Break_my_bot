@@ -43,7 +43,7 @@ Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play
 ```
 isaac/        launchers (train.py/play.py), our tasks (bmb_tasks/), training wrapper, reference recorder,
               eval_policy.py, interface.py (yaml loader, env.yaml checker, apply_to_env_cfg)
-models/       world model, adaptation module, training code (PyTorch)  [not created yet]
+models/       world_model/ (PyTorch): dataset (masks, labels), ensemble, train, surprisal + CUSUM, evaluate/calibrate
 export/       ONNX export + parity tests; deployable models in export/models/ (tracked for the Unity machine)
 unity/        Unity 6000.3.8f1 project: Assets/Scripts/{Runtime,Editor,Tests/EditMode}, Assets/Robots (URDF, Go2.prefab),
               Assets/Scenes (W3_Flat, W3_Rough)
@@ -130,8 +130,15 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
 - Play: `PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/play.py --task <...-Play[-v0]> --load_run <time>_<run> --checkpoint model_N.pt`
   (also writes Isaac Lab's own `<log_dir>/exported/policy.onnx`; the models Unity uses come from `export/export_onnx.py`)
 - TensorBoard: `~/miniforge3/envs/env_isaaclab/bin/tensorboard --logdir logs/rsl_rl`
-- Collect world model data: `TODO`
-- Train world model: `TODO`
+- Collect world model data (one split per process: train / clean / events / events_pits; ~2-7 min each, 8 GB total):
+  `PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/collect_wm_data.py --split train --v2 <student ckpt> --v1 <v1 rough ckpt> --out_dir logs/wm_data/w4_train`
+  (see `experiments/w4_wm_data/README.md` for the exact checkpoints; `--num_envs 256 --steps 160 --event_step 50` for a smoke run)
+- Train world model (~37 min, 5-member ensemble): `~/miniforge3/envs/env_isaaclab/bin/python -m models.world_model.train --data logs/wm_data/w4_train --name w4_wm`
+  -> `logs/wm/<time>_<name>/model.pt`
+- Evaluate + calibrate surprisal/CUSUM: `... -m models.world_model.evaluate --run logs/wm/<run> --data logs/wm_data --out experiments/w5_surprisal`
+  -> `results.json`, figures, `calibration.yaml` (paste into robot_interface.yaml `world_model.surprisal`)
+- Export world model + Unity traces: `... export/export_wm_onnx.py --run logs/wm/<run> --reference experiments/w3_reference/go2_v2.npz experiments/w3_reference/go2_v2_mudrop.npz`
+  -> `export/models/go2_wm.onnx`, `experiments/w3_reference/go2_wm*.json`; tests: `... -m pytest -k wm` and `... -m pytest models`
 - Export ONNX: `~/miniforge3/envs/env_isaaclab/bin/python export/export_onnx.py --run <log_dir> --variant flat|rough|v2 [--checkpoint model_N.pt] [--opset 15]`
   → `export/models/go2_<variant>.onnx` (input `obs` [1,48|235|1360], output `actions` [1,12]; v2 exports the student;
   opset 18 default, 15 for older Unity Inference Engine versions)

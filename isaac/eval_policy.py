@@ -86,24 +86,9 @@ import isaac.bmb_tasks  # noqa: E402, F401
 from isaac.bmb_tasks import mdp  # noqa: E402
 from isaac.bmb_tasks.go2_v2_env_cfg import FEET, Go2V2EnvCfg_PLAY  # noqa: E402
 from isaac.interface import load_interface  # noqa: E402
+from isaac.policy_loader import load_policy, policy_input  # noqa: E402
 
 SCENARIO = scenarios[0]
-
-
-def load_mlp(checkpoint: str, prefix: str) -> torch.nn.Sequential:
-    """Rebuild an rsl-rl MLP (Linear/ELU alternating) from the `<prefix>.<i>.weight` entries of a checkpoint."""
-    state = torch.load(checkpoint, map_location="cpu", weights_only=False)["model_state_dict"]
-    idx = sorted({int(k.split(".")[1]) for k in state if k.startswith(prefix + ".") and k.endswith(".weight")})
-    layers: list[torch.nn.Module] = []
-    for n, i in enumerate(idx):
-        w, b = state[f"{prefix}.{i}.weight"], state[f"{prefix}.{i}.bias"]
-        lin = torch.nn.Linear(w.shape[1], w.shape[0])
-        lin.weight.data.copy_(w)
-        lin.bias.data.copy_(b)
-        layers.append(lin)
-        if n < len(idx) - 1:
-            layers.append(torch.nn.ELU())
-    return torch.nn.Sequential(*layers).eval()
 
 
 def configure_scenario(cfg: Go2V2EnvCfg_PLAY, name: str, num_envs: int) -> None:
@@ -155,8 +140,7 @@ def main():
     for spec in args_cli.policy:
         name, rest = spec.split("=", 1)
         kind, ckpt = rest.split(":", 1)
-        prefix = {"v1": "actor", "teacher": "actor", "student": "student"}[kind]
-        policies.append((name, kind, load_mlp(ckpt, prefix).to(args_cli.device or "cuda:0"), ckpt))
+        policies.append((name, kind, load_policy(kind, ckpt).to(args_cli.device or "cuda:0"), ckpt))
     P = len(policies)
     num_envs = P * args_cli.envs_per_policy
 
@@ -185,15 +169,10 @@ def main():
             if SCENARIO == "mu_drop" and step == args_cli.steps // 4:
                 params = dict(friction_term.params, lower_start=0.1, lower_end=0.1, upper=0.1)
                 friction_term.func(env, None, **params)
-            inputs = {
-                "v1": obs["policy"],
-                "teacher": obs["teacher"],
-                "student": torch.cat([obs["policy"], obs["proprio_history"]], dim=1),
-            }
             actions = torch.zeros(num_envs, 12, device=device)
             for i, (_, kind, net, _) in enumerate(policies):
                 mask = owner == i
-                actions[mask] = net(inputs[kind][mask])
+                actions[mask] = net(policy_input(kind, obs)[mask])
             obs, _, terminated, _, _ = env.step(actions)
 
             cmd = env.command_manager.get_command("base_velocity")[:, :2]

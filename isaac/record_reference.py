@@ -41,6 +41,10 @@ parser.add_argument(
     default=None,
     help="Keep only this generated sub-terrain (e.g. random_rough). Stairs/boxes spawn on a flat centre platform.",
 )
+parser.add_argument(
+    "--friction_drop_at", type=float, default=None, help="BMB tasks: at this time (s) set every foot's friction to --friction_drop_to."
+)
+parser.add_argument("--friction_drop_to", type=float, default=0.05)
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -136,9 +140,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
         rec["scan_hits_z"] = []
         rec["scan_hits_xy"] = []
 
+    drop_step = None if args_cli.friction_drop_at is None else int(round(args_cli.friction_drop_at / base_env.step_dt))
+    if drop_step is not None:
+        rec["foot_mu"] = []
+        friction_term = base_env.event_manager.get_term_cfg("foot_friction_reset")
+
     obs = env.get_observations()
     with torch.inference_mode():
-        for _ in range(args_cli.steps):
+        for step in range(args_cli.steps):
+            if step == drop_step:  # acts from step `drop_step` on: o_t is still the pre-drop state
+                mu = args_cli.friction_drop_to
+                friction_term.func(base_env, torch.tensor([0], device=base_env.device),
+                                   **dict(friction_term.params, lower_start=mu, lower_end=mu, upper=mu))
+            if drop_step is not None:
+                rec["foot_mu"].append(np32(base_env.bmb_foot_friction[0]))
             # State that obs was computed from (nothing has stepped since the obs was produced).
             rec["obs"].append(np32(torch.cat([obs[g][0] for g in actor_groups])))
             rec["command"].append(np32(base_env.command_manager.get_command("base_velocity")[0]))
@@ -169,6 +184,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
         checkpoint=np.array(os.path.relpath(resume_path)),
         sub_terrain=np.array(args_cli.sub_terrain or ""),
         foot_friction=np.array(np.nan if args_cli.foot_friction is None else args_cli.foot_friction, dtype=np.float32),
+        **({} if drop_step is None else {"friction_drop_step": np.array(drop_step), "friction_drop_to": np.array(args_cli.friction_drop_to, dtype=np.float32)}),
         actor_obs_groups=np.array(actor_groups),
         runner=np.array(agent_cfg.class_name),
         seed=np.array(args_cli.seed),

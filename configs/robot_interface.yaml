@@ -151,3 +151,32 @@ policies:
     obs_normalization: false
     # Cautious gait after a surprisal alarm = clamp the velocity command (no separate training).
     cautious_gait: {max_lin_vel: 0.3, max_ang_vel: 0.5}
+
+world_model:
+  # Learned dynamics monitor (W4-5): ensemble of Gaussian MLPs, run once per policy step next to the policy.
+  # It never produces actions. Deployed as export/models/go2_wm.onnx: input "wm_in" [1, input_dim], outputs below.
+  policies: [v1, v2]          # order of the policy one-hot (v1 = W1 rough, v2 = deployed v2 student)
+  # Predicted state s (33-d): these observation terms (definitions in observation.terms), concatenated.
+  state_terms: [base_lin_vel, base_ang_vel, projected_gravity, joint_pos, joint_vel]
+  # wm_in = these blocks concatenated in order. All values in raw units; normalization is inside the model.
+  input:
+    - name: history
+      # The world model's OWN frame buffer (not the policy's proprio_history): the current frame + 5 previous.
+      # Flattened term by term, each term block oldest -> newest (current frame last), as in policies.v2 groups.
+      # On an episode reset every slot is filled with the first frame. It is NOT cleared on a surprisal alarm.
+      history_length: 6
+      terms: [base_lin_vel, base_ang_vel, projected_gravity, joint_pos, joint_vel, actions]
+    - {name: action, dim: 12}           # a_t: the raw policy output of this step (about to be applied)
+    - {name: height_scan, dim: 187}     # the height_scan observation term of this step (clipped)
+    - {name: policy_onehot, dim: 2}     # one-hot over `policies`; only the fall-probability head reads it
+  input_dim: 471
+  outputs:
+    state_mean: {dim: 33, def: "E[s_{t+1}] (absolute, raw units)"}
+    state_var: {dim: 33, def: "Var[s_{t+1}] = mean member variance + variance of the member means"}
+    disp_mean: {dim: 4, def: "base (dx, dy, dz, dyaw) from t to t+1, root link, in the yaw-only frame at t (m, rad)"}
+    disp_var: {dim: 4, def: "variance of disp, as state_var"}
+    fall_prob: {dim: 3, def: "P(the episode ends with a base contact within the next h steps), h = fall_horizons_steps"}
+    disagreement: {dim: 1, def: "mean over state dims of (variance of member means) / delta_std^2 (epistemic)"}
+  fall_horizons_steps: [10, 25, 50]
+  # Timing: at policy step t, after the policy produced a_t, run the model on wm_in(t). At step t+1, score the
+  # observed s_{t+1} against that prediction (world_model.surprisal).
