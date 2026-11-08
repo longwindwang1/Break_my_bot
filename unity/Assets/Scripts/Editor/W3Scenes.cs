@@ -33,14 +33,28 @@ namespace BMB.Editor
         [MenuItem("BMB/Build W3_Rough scene")]
         public static void BuildRough() => Build(RoughScenePath, "v2", rough: true, footFriction: 1f);
 
-        static void Build(string scenePath, string variant, bool rough, float footFriction)
+        /// <summary>The objects a built scene is made of, for builders that add more (e.g. the Playground).</summary>
+        public sealed class Parts
+        {
+            public UnityEngine.SceneManagement.Scene Scene;
+            public GameObject Ground;
+            public Go2Controller Controller;
+            public CommandSource Commands;
+            public Camera Camera;
+        }
+
+        /// <summary>Root objects a builder owns; they are deleted and recreated on every build.</summary>
+        static readonly string[] BuiltRoots = { "Ground", "Go2", "Go2Controller", "RoughPatch", "Game", "LevelGround" };
+
+        /// <summary>Opens (or creates) the scene, rebuilds ground, robot, controller and camera; saves unless told not to.</summary>
+        public static Parts Build(string scenePath, string variant, bool rough, float footFriction, bool save = true)
         {
             var itf = RobotInterface.Load();
             var scene = File.Exists(scenePath)
                 ? EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single)
                 : EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
             foreach (var root in scene.GetRootGameObjects())
-                if (root.name is "Ground" or "Go2" or "Go2Controller" or "RoughPatch")
+                if (System.Array.IndexOf(BuiltRoots, root.name) >= 0)
                     Object.DestroyImmediate(root);
 
             // Ground: top face at y = 0.
@@ -88,10 +102,34 @@ namespace BMB.Editor
             camera.transform.position = robot.transform.position + new Vector3(0.9f, 0.6f, -1.4f);
             camera.transform.LookAt(robot.transform.position);
 
-            EditorSceneManager.SaveScene(scene, scenePath);
-            Debug.Log($"[BMB] Built {scenePath}: ground {GroundSize} m (friction {itf.Friction.TerrainStaticFriction}/{itf.Friction.TerrainDynamicFriction}, " +
-                      $"{itf.Friction.CombineMode}){(rough ? $", rough patch {RoughPatchSize.x}x{RoughPatchSize.y} m" : "")}, " +
-                      $"variant {variant}, foot μ {(footFriction > 0 ? footFriction.ToString() : "v1 0.8/0.6")}, fixed command (0.5, 0, 0); Tab = manual control");
+            if (save)
+            {
+                EditorSceneManager.SaveScene(scene, scenePath);
+                Debug.Log($"[BMB] Built {scenePath}: ground {GroundSize} m (friction {itf.Friction.TerrainStaticFriction}/{itf.Friction.TerrainDynamicFriction}, " +
+                          $"{itf.Friction.CombineMode}){(rough ? $", rough patch {RoughPatchSize.x}x{RoughPatchSize.y} m" : "")}, " +
+                          $"variant {variant}, foot μ {(footFriction > 0 ? footFriction.ToString() : "v1 0.8/0.6")}, fixed command (0.5, 0, 0); Tab = manual control");
+            }
+            return new Parts { Scene = scene, Ground = ground, Controller = controller, Commands = commands, Camera = camera.GetComponent<Camera>() };
+        }
+
+        /// <summary>Sets serialized fields (private [SerializeField]s included) on a component.</summary>
+        public static void Set(Object component, params (string field, object value)[] values)
+        {
+            var so = new SerializedObject(component);
+            foreach (var (field, value) in values)
+            {
+                var p = so.FindProperty(field) ?? throw new System.ArgumentException($"{component.GetType().Name} has no field {field}");
+                switch (value)
+                {
+                    case Object o: p.objectReferenceValue = o; break;
+                    case bool b: p.boolValue = b; break;
+                    case float f: p.floatValue = f; break;
+                    case int i: p.intValue = i; break;
+                    case string s: p.stringValue = s; break;
+                    default: throw new System.ArgumentException($"unsupported value for {field}");
+                }
+            }
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         /// <summary>Same checker as the ground, tinted, so the rough patch stands out.</summary>

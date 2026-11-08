@@ -111,42 +111,13 @@ namespace BMB.Editor
 
         public static Trajectory Run(TrialSpec spec)
         {
-            var itf = RobotInterface.Load();
-            var scene = EditorSceneManager.NewPreviewScene();
-            Go2Controller controller = null;
-            try
+            using var world = HeadlessWorld.Create();
             {
-                var terrainLayer = LayerMask.NameToLayer(SimSettings.TerrainLayer);
-                var groundFriction = W3Scenes.GroundFriction(itf);
-                var ground = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                SceneManager.MoveGameObjectToScene(ground, scene);
-                ground.transform.localScale = new Vector3(200f, 1f, 200f);
-                ground.transform.position = new Vector3(0f, -0.5f, 0f);
-                ground.layer = terrainLayer;
-                ground.GetComponent<Collider>().sharedMaterial = groundFriction;
+                var itf = world.Interface;
                 if (spec.RoughTerrain)
-                {
-                    var patch = new GameObject("RoughPatch", typeof(HeightfieldTerrain));
-                    SceneManager.MoveGameObjectToScene(patch, scene);
-                    patch.layer = terrainLayer;
-                    patch.transform.position = new Vector3(0f, 0f, W3Scenes.RoughPatchCentreZ);
-                    patch.GetComponent<MeshCollider>().sharedMaterial = groundFriction;
-                    patch.GetComponent<HeightfieldTerrain>().Configure(W3Scenes.RoughPatchSize, spec.TerrainSeed);
-                }
-
-                var robot = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(Go2Setup.PrefabPath), scene);
-                robot.transform.position = new Vector3(0f, itf.InitBaseHeight + 0.1f, 0f);
-                var body = robot.GetComponent<Go2Body>();
-                body.ApplyRuntimeSettings();
-
-                var go = new GameObject("Go2Controller");
-                SceneManager.MoveGameObjectToScene(go, scene);
-                controller = go.AddComponent<Go2Controller>();
-                controller.Configure(body, spec.Variant, resetAfterFall: true, footFrictionMu: spec.FootFriction);
-                controller.ExternallyStepped = true;
-                controller.CommandOverride = spec.Command;
-                Physics.SyncTransforms();  // colliders moved after creation; the spawn raycast must see them in place
-                controller.Initialize();
+                    world.AddRoughPatch(W3Scenes.RoughPatchSize, new Vector3(0f, 0f, W3Scenes.RoughPatchCentreZ), spec.TerrainSeed);
+                var controller = world.AddRobot(spec.Variant, Vector3.zero, footFriction: spec.FootFriction, resetOnFall: true, command: spec.Command);
+                var body = controller.Body;
 
                 var tr = new Trajectory { Dt = itf.Timing.PolicyDt };
                 var start = body.BasePosition;
@@ -162,21 +133,9 @@ namespace BMB.Editor
                     tr.Actions.Add(c.Actions.ToArray());
                 };
 
-                var physics = scene.GetPhysicsScene();
-                var steps = Mathf.RoundToInt(spec.Seconds / itf.Timing.PhysicsDt);
-                for (var i = 0; i < steps; i++)
-                {
-                    controller.ControlStep();
-                    physics.Simulate(itf.Timing.PhysicsDt);
-                }
+                world.Run(spec.Seconds);
                 tr.Falls = controller.Falls;
                 return tr;
-            }
-            finally
-            {
-                if (controller != null)
-                    controller.Shutdown();  // OnDestroy does not run in edit mode
-                EditorSceneManager.ClosePreviewScene(scene);
             }
         }
 

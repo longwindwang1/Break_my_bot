@@ -110,6 +110,27 @@ namespace BMB
 
         // --- contact ---------------------------------------------------------------------------------------
 
+        BoxCollider[] baseBoxes;
+        readonly Collider[] overlapHits = new Collider[8];
+
+        /// <summary>
+        /// Isaac's base_contact termination (contact force on the base body): true when a box collider of the base
+        /// overlaps the given layers, grown by <paramref name="margin"/>. Works in preview scenes without callbacks.
+        /// </summary>
+        public bool BaseTouches(PhysicsScene physics, int layerMask, float margin = 0.005f)
+        {
+            baseBoxes ??= rootBody.GetComponentsInChildren<BoxCollider>(true)
+                .Where(c => c.GetComponentInParent<ArticulationBody>() == rootBody).ToArray();
+            foreach (var box in baseBoxes)
+            {
+                var t = box.transform;
+                var half = Vector3.Scale(box.size, t.lossyScale) * 0.5f + Vector3.one * margin;
+                if (physics.OverlapBox(t.TransformPoint(box.center), half, overlapHits, t.rotation, layerMask, QueryTriggerInteraction.Ignore) > 0)
+                    return true;
+            }
+            return false;
+        }
+
         PhysicsMaterial footMaterial;
 
         /// <summary>

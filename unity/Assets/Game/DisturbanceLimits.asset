@@ -1,0 +1,36 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8fff8b47ff61c104a8696c8f4f0e5d25, type: 3}
+  m_Name: DisturbanceLimits
+  m_EditorClassIdentifier: BMB.Runtime::BMB.DisturbanceLimits
+  training:
+    pushAxis: 0.5
+    friction: {x: 0.05, y: 1.25}
+    payload: {x: -1, y: 3}
+    comXY: 0.05
+    comZ: 0.02
+    obstacleHeight: 0.16
+    stairStep: 0.23
+    slope: 0.4
+    dragForce: 20
+    ballMomentum: 7.5
+  hard:
+    pushAxis: 2
+    friction: {x: 0, y: 2}
+    payload: {x: -2, y: 8}
+    comXY: 0.1
+    comZ: 0.05
+    obstacleHeight: 0.4
+    stairStep: 0.35
+    slope: 0.61
+    dragForce: 300
+    ballMomentum: 40

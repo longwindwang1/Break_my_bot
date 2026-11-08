@@ -31,19 +31,22 @@ namespace BMB
         [SerializeField] float trialSeconds = 10f;
 
         [Header("Fall handling")]
-        [Tooltip("Reset when the base tilts more than this (deg) or drops below fallHeight")]
+        [Tooltip("A fall is the base touching the ground (Isaac's base_contact termination), or optionally the base " +
+                 "tilting more than fallTiltDeg / dropping below fallHeight above the terrain (≤ 0 disables those two)")]
         [SerializeField] float fallTiltDeg = 70f;
         [SerializeField] float fallHeight = 0.08f;
         [SerializeField] bool resetOnFall = true;
 
         RobotInterface itf;
         PolicyRunner policy;
+        bool ownsPolicy;
         ObservationBuilder builder;
         float[] obs, actions, lastAction, qTarget, q, qd, tau, scan;
         HeightScanner scanner;
         PhysicsScene physics;
         int terrainMask;
         int physicsStep;
+        long totalPhysicsSteps;
         Vector3 spawnPosition;
         Quaternion spawnRotation;
 
@@ -57,9 +60,15 @@ namespace BMB
         public string Variant => variant;
         public RobotInterface Interface => itf;
         public Go2Body Body => body;
-        public bool Initialized => policy != null;
+        public bool Initialized => builder != null;
         public int PhysicsStep => physicsStep;
+        /// <summary>Time since the last reset (episode time).</summary>
         public float SimTime => physicsStep * (itf?.Timing.PhysicsDt ?? 0f);
+        /// <summary>Simulated time since Initialize, across resets.</summary>
+        public double TotalTime => totalPhysicsSteps * (double)(itf?.Timing.PhysicsDt ?? 0f);
+        /// <summary>Physics scene the robot lives in (play scene or a headless preview scene).</summary>
+        public PhysicsScene Physics => physics;
+        public string LastFallReason { get; private set; }
         public Vector3 Command { get; private set; }
         /// <summary>Base height above the terrain directly below it.</summary>
         public float BaseHeight => body.BasePosition.y - GroundHeightAt(body.BasePosition);
@@ -81,15 +90,36 @@ namespace BMB
         public Vector3? CommandOverride { get; set; }
         /// <summary>Raised after every policy step (after the new targets are set).</summary>
         public event Action<Go2Controller> PolicyStepped;
+        /// <summary>Raised when a fall is detected (before an automatic reset), with the reason.</summary>
+        public event Action<Go2Controller, string> Fell;
+        /// <summary>Raised after every reset to the spawn pose.</summary>
+        public event Action<Go2Controller> WasReset;
 
         /// <summary>Wiring for code-built setups (the scene builder uses serialized fields instead).</summary>
-        public void Configure(Go2Body robot, string policyVariant, CommandSource commands = null, bool resetAfterFall = true, float footFrictionMu = 0f)
+        /// <param name="sharedPolicy">Optional inference runner shared by several robots (it is stateless); not disposed here.</param>
+        public void Configure(Go2Body robot, string policyVariant, CommandSource commands = null, bool resetAfterFall = true,
+                              float footFrictionMu = 0f, PolicyRunner sharedPolicy = null)
         {
             body = robot;
             variant = policyVariant;
             commandSource = commands;
             resetOnFall = resetAfterFall;
             footFriction = footFrictionMu;
+            policy = sharedPolicy;
+        }
+
+        /// <summary>Fall criteria; Isaac's evaluation uses base contact only (tilt and height ≤ 0).</summary>
+        public void SetFallCriteria(float tiltDeg, float minBaseHeight)
+        {
+            fallTiltDeg = tiltDeg;
+            fallHeight = minBaseHeight;
+        }
+
+        /// <summary>Where the robot returns on reset (Unity frame; y is recomputed from the terrain).</summary>
+        public void SetSpawn(Vector3 position, float yawDeg)
+        {
+            spawnPosition = new Vector3(position.x, GroundHeightAt(position) + itf.InitBaseHeight, position.z);
+            spawnRotation = Quaternion.Euler(0f, yawDeg, 0f);
         }
 
         void Start() => Initialize();
@@ -97,12 +127,16 @@ namespace BMB
         /// <summary>Loads the interface and the policy and resets to the spawn pose (the body's current x/z and yaw).</summary>
         public void Initialize()
         {
-            if (Initialized)
+            if (builder != null)
                 return;
             itf = RobotInterface.Load();
             body.Validate(itf);
-            policy = PolicyRunner.Load(variant, itf);
+            ownsPolicy = policy == null;
+            if (ownsPolicy)
+                policy = PolicyRunner.Load(variant, itf);
             builder = new ObservationBuilder(itf, variant);
+            if (policy.ObsDim != builder.Dim)
+                throw new InvalidOperationException($"{name}: shared policy {policy.Name} takes {policy.ObsDim} inputs, {variant} builds {builder.Dim}");
             physics = gameObject.scene.GetPhysicsScene();
             terrainMask = LayerMask.GetMask(SimSettings.TerrainLayer);
             if (builder.NeedsHeightScan)
@@ -134,8 +168,10 @@ namespace BMB
         /// <summary>Releases the inference worker (OnDestroy does not run for edit-mode objects; call it there).</summary>
         public void Shutdown()
         {
-            policy?.Dispose();
+            if (ownsPolicy)
+                policy?.Dispose();
             policy = null;
+            builder = null;
         }
 
         /// <summary>Back to the spawn pose: default joint angles, zero velocities, last action 0, history cleared.</summary>
@@ -152,6 +188,7 @@ namespace BMB
             heightSum = 0;
             heightSamples = 0;
             trialLogged = false;
+            WasReset?.Invoke(this);
         }
 
         void FixedUpdate()
@@ -169,6 +206,7 @@ namespace BMB
             DCMotor.Torques(qTarget, q, qd, itf.Actuator, tau);
             body.SetJointTorques(tau);
             physicsStep++;
+            totalPhysicsSteps++;
         }
 
         void PolicyStep()
@@ -233,10 +271,20 @@ namespace BMB
         void CheckFall()
         {
             var tilt = Vector3.Angle(body.BaseRotation * Vector3.up, Vector3.up);
-            if (tilt < fallTiltDeg && BaseHeight > fallHeight)
+            string reason = null;
+            if (body.BaseTouches(physics, terrainMask))
+                reason = "base contact";
+            else if (fallTiltDeg > 0f && tilt >= fallTiltDeg)
+                reason = $"tilt {tilt:F0} deg";
+            else if (fallHeight > 0f && BaseHeight <= fallHeight)
+                reason = $"base height {BaseHeight:F2} m";
+            if (reason == null)
                 return;
             Falls++;
-            Debug.LogWarning($"[BMB] Fall #{Falls} at {SimTime:F2} s (tilt {tilt:F0} deg, base height {BaseHeight:F2} m)");
+            LastFallReason = reason;
+            if (!ExternallyStepped)
+                Debug.LogWarning($"[BMB] Fall #{Falls} at {SimTime:F2} s ({reason})");
+            Fell?.Invoke(this, reason);
             if (resetOnFall)
                 ResetRobot();
         }
