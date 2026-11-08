@@ -1,12 +1,15 @@
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.InputSystem.UI;
+using UnityEngine.UIElements;
 
 namespace BMB.Editor
 {
     /// <summary>
     /// The disturbance playground: v2 policy (foot μ 1.0, manual control), the disturbance manager with its tools and
-    /// the debug HUD. Idempotent: rebuilds the scene's contents.
+    /// the neon game HUD (UI Toolkit). Idempotent: rebuilds the scene's contents.
     /// </summary>
     public static class PlaygroundScene
     {
@@ -36,11 +39,42 @@ namespace BMB.Editor
             var game = new GameObject("Game");
             var manager = game.AddComponent<DisturbanceManager>();
             W3Scenes.Set(manager, ("controller", parts.Controller), ("limits", Limits()), ("viewCamera", parts.Camera), ("frictionZones", zones), ("level", level));
-            var hud = game.AddComponent<DebugHud>();
-            W3Scenes.Set(hud, ("manager", manager), ("commandSource", parts.Commands));
+
+            // Game HUD (UI Toolkit) and an EventSystem fed by the Input System.
+            var ui = new GameObject("GameUI");
+            var document = ui.AddComponent<UIDocument>();
+            document.panelSettings = PanelSettingsAsset();
+            document.visualTreeAsset = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(HudPath);
+            var gameUi = ui.AddComponent<GameUI>();
+            W3Scenes.Set(gameUi, ("manager", manager), ("commands", parts.Commands));
+            if (Object.FindFirstObjectByType<EventSystem>() == null)
+                new GameObject("EventSystem", typeof(EventSystem), typeof(InputSystemUIInputModule));
 
             EditorSceneManager.SaveScene(parts.Scene, ScenePath);
             Debug.Log($"[BMB] Built {ScenePath}: v2, foot μ 1.0, {LevelSize} m editable ground, manual control (W/S A/D Q/E), disturbance tools 1–7, H = hard mode, F1 = help");
+        }
+
+        public const string HudPath = "Assets/UI/GameHud.uxml";
+        public const string ThemePath = "Assets/UI/BmbRuntimeTheme.tss";
+        public const string PanelSettingsPath = "Assets/UI/GamePanelSettings.asset";
+
+        /// <summary>Panel scaled from a 1920 × 1080 reference, default runtime theme (our look is in Neon.uss).</summary>
+        public static PanelSettings PanelSettingsAsset()
+        {
+            var settings = AssetDatabase.LoadAssetAtPath<PanelSettings>(PanelSettingsPath);
+            if (settings == null)
+            {
+                settings = ScriptableObject.CreateInstance<PanelSettings>();
+                AssetDatabase.CreateAsset(settings, PanelSettingsPath);
+            }
+            settings.themeStyleSheet = AssetDatabase.LoadAssetAtPath<ThemeStyleSheet>(ThemePath);
+            settings.scaleMode = PanelScaleMode.ScaleWithScreenSize;
+            settings.referenceResolution = new Vector2Int(1920, 1080);
+            settings.screenMatchMode = PanelScreenMatchMode.MatchWidthOrHeight;
+            settings.match = 0.5f;
+            EditorUtility.SetDirty(settings);
+            AssetDatabase.SaveAssets();
+            return settings;
         }
 
         public const string OverlayMaterialPath = "Assets/Game/FrictionOverlay.mat";

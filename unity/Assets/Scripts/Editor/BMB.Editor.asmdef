@@ -4,7 +4,9 @@
     "references": [
         "BMB.Runtime",
         "Unity.InferenceEngine",
-        "Unity.Robotics.UrdfImporter"
+        "Unity.Robotics.UrdfImporter",
+        "UnityEngine.UI",
+        "Unity.InputSystem"
     ],
     "includePlatforms": [
         "Editor"

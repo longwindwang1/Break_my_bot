@@ -5,6 +5,7 @@
         "BMB.Runtime",
         "BMB.Editor",
         "Unity.InferenceEngine",
+        "Unity.InputSystem",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],

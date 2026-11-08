@@ -119,13 +119,19 @@ namespace BMB
         {
             tools.Clear();
             tools.Add(new PushTool());
-            tools.Add(new PlaceholderTool("Drag"));
-            tools.Add(new PlaceholderTool("Ball"));
+            tools.Add(new PlaceholderTool("Drag", NeonIconKind.Drag));
+            tools.Add(new PlaceholderTool("Ball", NeonIconKind.Ball));
             tools.Add(new PayloadTool());
             tools.Add(new FrictionTool());
             tools.Add(new ObstacleTool());
-            tools.Add(new PlaceholderTool("Deceptive terrain"));
+            tools.Add(new PlaceholderTool("Deceptive terrain", NeonIconKind.Deceptive));
         }
+
+        /// <summary>Set by the game UI every frame: the mouse is over a UI panel, so tools ignore world clicks.</summary>
+        public bool PointerOverUI { get; set; }
+
+        /// <summary>The mouse may act on the world this frame (not over the UI).</summary>
+        public bool WorldPointer => !PointerOverUI;
 
         // --- disturbances: forces and payload ----------------------------------------------------------------
 
@@ -319,7 +325,7 @@ namespace BMB
                 Select(null);
             var digits = new[] { keyboard.digit1Key, keyboard.digit2Key, keyboard.digit3Key, keyboard.digit4Key, keyboard.digit5Key, keyboard.digit6Key, keyboard.digit7Key };
             for (var i = 0; i < digits.Length && i < tools.Count; i++)
-                if (digits[i].wasPressedThisFrame)
+                if (digits[i].wasPressedThisFrame && tools[i].Available)
                     Select(ActiveTool == tools[i] ? null : tools[i]);
             ActiveTool?.Update(this);
         }
@@ -371,10 +377,11 @@ namespace BMB
 
         // --- mouse helpers for tools --------------------------------------------------------------------------
 
+        /// <summary>Camera ray through the mouse; false while the mouse is over the UI (tools then ignore it).</summary>
         public bool MouseRay(out Ray ray)
         {
             ray = default;
-            if (viewCamera == null || Mouse.current == null)
+            if (viewCamera == null || Mouse.current == null || PointerOverUI)
                 return false;
             ray = viewCamera.ScreenPointToRay(Mouse.current.position.ReadValue());
             return true;
@@ -394,6 +401,12 @@ namespace BMB
             return MouseRay(out var ray) && controller.Physics.Raycast(ray.origin, ray.direction, out hit, 500f, robotMask, QueryTriggerInteraction.Ignore);
         }
 
+        /// <summary>Wheel steps for tools: none while the mouse is over the UI.</summary>
+        public int Scroll() => PointerOverUI ? 0 : ScrollSteps();
+
+        /// <summary>Left button pressed this frame on the world (not on the UI).</summary>
+        public bool WorldClick => !PointerOverUI && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
+
         /// <summary>Mouse wheel steps this frame (+1 up, −1 down, 0 none); Ctrl + wheel is the camera's zoom.</summary>
         public static int ScrollSteps()
         {
@@ -406,14 +419,24 @@ namespace BMB
         public static bool Shift => Keyboard.current != null && (Keyboard.current.leftShiftKey.isPressed || Keyboard.current.rightShiftKey.isPressed);
     }
 
-    /// <summary>An interactive tool bound to a number key. Input handling only; effects go through the manager's API.</summary>
+    /// <summary>
+    /// An interactive tool bound to a number key. Input handling only; effects go through the manager's API.
+    /// Its parameters are described by <see cref="BuildControls"/> for the game UI.
+    /// </summary>
     public abstract class DisturbanceTool
     {
         public abstract string Name { get; }
+        public virtual NeonIconKind Icon => NeonIconKind.Lock;
+        /// <summary>False for tools not implemented yet (shown locked in the UI).</summary>
+        public virtual bool Available => true;
         /// <summary>One-line usage, shown in the HUD while selected.</summary>
         public virtual string Help => "";
+        /// <summary>Short mouse hint at the bottom of the tool card.</summary>
+        public virtual string Hint => "";
         /// <summary>Current parameters, shown in the HUD while selected.</summary>
         public virtual string Status(DisturbanceManager m) => "";
+        /// <summary>Parameters and actions for the tool card (built once per manager).</summary>
+        public virtual System.Collections.Generic.List<ToolControl> BuildControls(DisturbanceManager m) => new System.Collections.Generic.List<ToolControl>();
         public virtual void OnSelect(DisturbanceManager m) { }
         public virtual void OnDeselect(DisturbanceManager m) { }
         public virtual void Update(DisturbanceManager m) { }
@@ -423,8 +446,16 @@ namespace BMB
     sealed class PlaceholderTool : DisturbanceTool
     {
         readonly string name;
-        public PlaceholderTool(string name) => this.name = name;
+        readonly NeonIconKind icon;
+        public PlaceholderTool(string name, NeonIconKind icon = NeonIconKind.Lock)
+        {
+            this.name = name;
+            this.icon = icon;
+        }
         public override string Name => name;
+        public override NeonIconKind Icon => icon;
+        public override bool Available => false;
         public override string Help => "not implemented yet";
+        public override string Hint => "Coming soon";
     }
 }

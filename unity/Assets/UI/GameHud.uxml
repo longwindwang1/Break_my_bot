@@ -1,0 +1,88 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" editor-extension-mode="False">
+    <Style src="Neon.uss" />
+    <ui:VisualElement name="root" class="root" picking-mode="Ignore">
+
+        <ui:VisualElement name="topbar" class="panel topbar">
+            <ui:Label name="title" text="BREAK MY BOT" class="title" />
+            <ui:Label name="policy" text="POLICY —" class="chip" />
+            <ui:Button name="mode" class="chip mode" />
+            <ui:VisualElement class="spacer" picking-mode="Ignore" />
+            <ui:Label name="clock" class="readout num" />
+            <ui:Label name="falls" class="readout num" />
+            <ui:VisualElement name="top-buttons" class="top-buttons" />
+        </ui:VisualElement>
+
+        <ui:VisualElement name="middle" class="middle" picking-mode="Ignore">
+            <ui:VisualElement name="rail" class="panel rail" />
+            <ui:VisualElement name="tool-card" class="panel card tool-card">
+                <ui:VisualElement class="card-head" picking-mode="Ignore">
+                    <ui:VisualElement name="tool-icon-slot" class="card-icon-slot" picking-mode="Ignore" />
+                    <ui:Label name="tool-title" class="card-title" />
+                </ui:VisualElement>
+                <ui:VisualElement name="tool-controls" class="tool-controls" />
+                <ui:Label name="tool-hint" class="hint" />
+            </ui:VisualElement>
+            <ui:VisualElement class="spacer" picking-mode="Ignore" />
+            <ui:VisualElement name="side" class="side" picking-mode="Ignore">
+                <ui:VisualElement name="robot-card" class="panel card">
+                    <ui:Label text="ROBOT" class="card-title" />
+                    <ui:VisualElement class="stat">
+                        <ui:Label text="SPEED" class="stat-name" />
+                        <ui:Label name="speed-value" class="stat-value num" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="bar-track" picking-mode="Ignore">
+                        <ui:VisualElement name="speed-cmd" class="bar cmd" picking-mode="Ignore" />
+                        <ui:VisualElement name="speed-actual" class="bar actual" picking-mode="Ignore" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="stat">
+                        <ui:Label text="HEIGHT" class="stat-name" />
+                        <ui:Label name="height-value" class="stat-value num" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="stat">
+                        <ui:Label text="TILT" class="stat-name" />
+                        <ui:Label name="tilt-value" class="stat-value num" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="stat">
+                        <ui:Label text="PAYLOAD" class="stat-name" />
+                        <ui:Label name="payload-value" class="stat-value num" />
+                    </ui:VisualElement>
+                    <ui:Label text="FOOT FRICTION" class="sub-title" />
+                    <ui:VisualElement name="feet-slot" class="feet-slot" picking-mode="Ignore" />
+                </ui:VisualElement>
+                <ui:VisualElement name="events-card" class="panel card events-card">
+                    <ui:Label text="EVENTS" class="card-title" />
+                    <ui:VisualElement name="events" class="events" />
+                </ui:VisualElement>
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <ui:VisualElement name="bottom" class="bottom" picking-mode="Ignore">
+            <ui:VisualElement name="drive" class="panel drive">
+                <ui:Label text="DRIVE" class="card-title" />
+                <ui:VisualElement name="drive-mode" class="seg-row" />
+                <ui:VisualElement name="drive-detail" class="drive-detail" />
+            </ui:VisualElement>
+            <ui:VisualElement class="spacer" picking-mode="Ignore" />
+            <ui:VisualElement name="stick-panel" class="panel stick-panel">
+                <ui:Button name="turn-left" class="round-btn" />
+                <ui:VisualElement name="stick-slot" class="stick-slot" />
+                <ui:Button name="turn-right" class="round-btn" />
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <ui:Label name="tooltip" class="tooltip" picking-mode="Ignore" />
+        <ui:Label name="toast" class="toast" picking-mode="Ignore" />
+
+        <ui:VisualElement name="help" class="help-overlay">
+            <ui:VisualElement class="panel help-card">
+                <ui:VisualElement class="card-head">
+                    <ui:Label text="CONTROLS" class="card-title help-title" />
+                    <ui:VisualElement class="spacer" picking-mode="Ignore" />
+                    <ui:Button name="help-close" class="round-btn small" />
+                </ui:VisualElement>
+                <ui:VisualElement name="help-columns" class="help-columns" />
+                <ui:Label text="Disturbances stay inside the v2 training ranges unless HARD MODE is on; values beyond them turn red." class="hint" />
+            </ui:VisualElement>
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>
