@@ -131,25 +131,104 @@ namespace BMB
             return false;
         }
 
-        PhysicsMaterial footMaterial;
+        // --- feet ------------------------------------------------------------------------------------------
+
+        /// <summary>Foot bodies in this order (index used by the per-foot methods).</summary>
+        public static readonly string[] FootNames = { "FL_foot", "FR_foot", "RL_foot", "RR_foot" };
+
+        Transform[] feet;
+        Collider[][] footColliders;
+        PhysicsMaterial[] footMaterials;
+
+        void FindFeet()
+        {
+            if (feet != null)
+                return;
+            var bodies = rootBody.GetComponentsInChildren<ArticulationBody>(true);
+            var colliders = rootBody.GetComponentsInChildren<Collider>(true);
+            feet = new Transform[FootNames.Length];
+            footColliders = new Collider[FootNames.Length][];
+            footMaterials = new PhysicsMaterial[FootNames.Length];
+            for (var i = 0; i < FootNames.Length; i++)
+            {
+                var foot = bodies.Single(b => b.name == FootNames[i]);
+                feet[i] = foot.transform;
+                footColliders[i] = colliders.Where(c => c.GetComponentInParent<ArticulationBody>() == foot).ToArray();
+                footMaterials[i] = new PhysicsMaterial($"Go2_{FootNames[i]}_runtime") { hideFlags = HideFlags.DontSave, bounciness = 0f, bounceCombine = PhysicsMaterialCombine.Multiply };
+            }
+        }
+
+        /// <summary>World position of a foot body (Unity frame).</summary>
+        public Vector3 FootPosition(int foot)
+        {
+            FindFeet();
+            return feet[foot].position;
+        }
 
         /// <summary>
-        /// Foot friction like v2's randomize_foot_friction: static μ on the foot colliders, dynamic = ratio · μ
-        /// (robot_interface.yaml friction.foot_dynamic_ratio), terrain material multiplied in by the combine mode.
-        /// Other links keep the prefab's v1 material. Also the hook for game mechanics such as ice.
+        /// Friction of one foot (v2's randomize_foot_friction writes the foot colliders; the terrain material, μ 1.0
+        /// with the same combine mode, multiplies in). Other links keep the prefab's v1 material.
         /// </summary>
+        public void SetFootFriction(int foot, float staticFriction, float dynamicFriction, PhysicsMaterialCombine combine)
+        {
+            FindFeet();
+            var m = footMaterials[foot];
+            m.staticFriction = staticFriction;
+            m.dynamicFriction = dynamicFriction;
+            m.frictionCombine = combine;
+            foreach (var c in footColliders[foot])
+                c.sharedMaterial = m;
+        }
+
+        /// <summary>All feet: static μ, dynamic = ratio · μ (robot_interface.yaml friction.foot_dynamic_ratio).</summary>
         public void SetFootFriction(float staticFriction, float dynamicRatio, PhysicsMaterialCombine combine)
         {
-            if (footMaterial == null)
-                footMaterial = new PhysicsMaterial("Go2_foot_runtime") { hideFlags = HideFlags.DontSave };
-            footMaterial.staticFriction = staticFriction;
-            footMaterial.dynamicFriction = staticFriction * dynamicRatio;
-            footMaterial.frictionCombine = combine;
-            footMaterial.bounciness = 0f;
-            footMaterial.bounceCombine = PhysicsMaterialCombine.Multiply;
-            foreach (var c in rootBody.GetComponentsInChildren<Collider>(true))
-                if (c.GetComponentInParent<ArticulationBody>().name.EndsWith("_foot"))
-                    c.sharedMaterial = footMaterial;
+            for (var i = 0; i < FootNames.Length; i++)
+                SetFootFriction(i, staticFriction, staticFriction * dynamicRatio, combine);
+        }
+
+        public float FootStaticFriction(int foot)
+        {
+            FindFeet();
+            return footColliders[foot][0].sharedMaterial.staticFriction;
+        }
+
+        // --- payload ---------------------------------------------------------------------------------------
+
+        bool nominalStored;
+        float nominalMass;
+        Vector3 nominalCom, nominalInertia;
+
+        /// <summary>Mass added to the base (kg) and base COM offset in Isaac base axes (m), as last set.</summary>
+        public float AddedMass { get; private set; }
+        public Vector3 ComOffset { get; private set; }
+
+        public float TotalMass => rootBody.GetComponentsInChildren<ArticulationBody>(true).Sum(b => b.mass);
+        public float NominalBaseMass { get { StoreNominal(); return nominalMass; } }
+        public Vector3 NominalBaseCom { get { StoreNominal(); return nominalCom; } }
+
+        void StoreNominal()
+        {
+            if (nominalStored)
+                return;
+            nominalMass = rootBody.mass;
+            nominalCom = rootBody.centerOfMass;
+            nominalInertia = rootBody.inertiaTensor;
+            nominalStored = true;
+        }
+
+        /// <summary>
+        /// Payload like v2's randomize_base_mass_cached / randomize_base_com_cached: base mass = nominal + added, inertia
+        /// scaled by the mass ratio, COM = nominal + offset (Isaac base axes: x forward, y left, z up). (0, 0) restores.
+        /// </summary>
+        public void SetPayload(float addedMass, Vector3 comOffsetIsaac)
+        {
+            StoreNominal();
+            rootBody.mass = nominalMass + addedMass;
+            rootBody.inertiaTensor = nominalInertia * (rootBody.mass / nominalMass);
+            rootBody.centerOfMass = nominalCom + IsaacFrame.PolarFromIsaac(comOffsetIsaac);
+            AddedMass = addedMass;
+            ComOffset = comOffsetIsaac;
         }
     }
 }

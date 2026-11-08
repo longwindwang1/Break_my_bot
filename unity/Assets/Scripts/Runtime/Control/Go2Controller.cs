@@ -23,6 +23,8 @@ namespace BMB
         [Tooltip("Static foot friction μ (dynamic = foot_dynamic_ratio · μ). ≤ 0 keeps the prefab's v1 material " +
                  "(0.8 / 0.6, what flat and rough were trained with). v2 was trained with 0.05–1.25; its reference used 1.0")]
         [SerializeField] float footFriction;
+        [Tooltip("Ground friction map read per foot every physics step (optional; without it the ground is μ 1.0)")]
+        [SerializeField] FrictionZones frictionZones;
         [Tooltip("Draw the height-scan hit points as gizmos")]
         [SerializeField] bool drawScan = true;
 
@@ -43,6 +45,7 @@ namespace BMB
         ObservationBuilder builder;
         float[] obs, actions, lastAction, qTarget, q, qd, tau, scan;
         HeightScanner scanner;
+        FootFrictionDriver footDriver;
         PhysicsScene physics;
         int terrainMask;
         int physicsStep;
@@ -75,6 +78,20 @@ namespace BMB
         public int Falls { get; private set; }
         /// <summary>Null for policies without a height scan.</summary>
         public HeightScanner Scanner => scanner;
+        /// <summary>Per-foot friction (ground μ under each foot, effective μ).</summary>
+        public FootFrictionDriver FootFriction => footDriver;
+
+        /// <summary>Ground friction map read per foot (null = uniform μ 1.0 ground).</summary>
+        public FrictionZones Zones
+        {
+            get => frictionZones;
+            set
+            {
+                frictionZones = value;
+                if (footDriver != null)
+                    footDriver.Zones = value;
+            }
+        }
 
         /// <summary>Joint angles / velocities read at the last control step (policy order).</summary>
         public IReadOnlyList<float> JointPos => q;
@@ -144,8 +161,7 @@ namespace BMB
                 scanner = new HeightScanner(itf.HeightScan, physics, terrainMask);
                 scan = new float[scanner.Count];
             }
-            if (footFriction > 0f)
-                body.SetFootFriction(footFriction, itf.Friction.FootDynamicRatio, itf.Friction.UnityCombineMode());
+            footDriver = new FootFrictionDriver(body, itf, footFriction) { Zones = frictionZones };
 
             var n = itf.NumJoints;
             obs = new float[builder.Dim];
@@ -205,6 +221,7 @@ namespace BMB
                 PolicyStep();
             DCMotor.Torques(qTarget, q, qd, itf.Actuator, tau);
             body.SetJointTorques(tau);
+            footDriver.Update();
             physicsStep++;
             totalPhysicsSteps++;
         }
@@ -241,7 +258,7 @@ namespace BMB
 
         void LogTrial()
         {
-            if (trialLogged || trialSeconds <= 0f || SimTime < trialSeconds)
+            if (trialLogged || trialSeconds <= 0f || SimTime < trialSeconds || ExternallyStepped)
                 return;
             trialLogged = true;
             var d = Displacement;

@@ -44,7 +44,7 @@ namespace BMB.Editor
         }
 
         /// <summary>Root objects a builder owns; they are deleted and recreated on every build.</summary>
-        static readonly string[] BuiltRoots = { "Ground", "Go2", "Go2Controller", "RoughPatch", "Game", "LevelGround" };
+        static readonly string[] BuiltRoots = { "Ground", "Go2", "Go2Controller", "RoughPatch", "Game", "LevelGround", "FrictionZones" };
 
         /// <summary>Opens (or creates) the scene, rebuilds ground, robot, controller and camera; saves unless told not to.</summary>
         public static Parts Build(string scenePath, string variant, bool rough, float footFriction, bool save = true)

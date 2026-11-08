@@ -18,6 +18,7 @@ namespace BMB
         [SerializeField] Go2Controller controller;
         [SerializeField] DisturbanceLimits limits;
         [SerializeField] Camera viewCamera;
+        [SerializeField] FrictionZones frictionZones;
         [Tooltip("Allow values beyond the v2 training ranges (flagged in the HUD and the log)")]
         [SerializeField] bool hardMode;
         [Tooltip("Write the event log to unity/Logs/disturbances_<time>.csv when play mode ends")]
@@ -31,6 +32,7 @@ namespace BMB
         public Go2Controller Controller => controller;
         public DisturbanceLimits Limits => limits;
         public Camera ViewCamera => viewCamera;
+        public FrictionZones Zones => frictionZones;
         public IReadOnlyList<DisturbanceTool> Tools => tools;
         public DisturbanceTool ActiveTool { get; private set; }
         /// <summary>Extra HUD lines (payload, foot friction, …) contributed by subsystems.</summary>
@@ -49,16 +51,28 @@ namespace BMB
         }
 
         /// <summary>Wiring for code-built setups (headless runs, tests).</summary>
-        public void Configure(Go2Controller robotController, DisturbanceLimits disturbanceLimits, Camera camera = null)
+        public void Configure(Go2Controller robotController, DisturbanceLimits disturbanceLimits, Camera camera = null, FrictionZones zones = null)
         {
             controller = robotController;
             limits = disturbanceLimits;
             viewCamera = camera;
+            frictionZones = zones;
+            if (zones != null && controller != null)
+                controller.Zones = zones;
+            EnsureInitialized();
             Subscribe();
         }
 
-        void Awake()
+        bool initialized;
+
+        void Awake() => EnsureInitialized();
+
+        /// <summary>Awake's work; also called by Configure because Awake does not run for edit-mode objects.</summary>
+        void EnsureInitialized()
         {
+            if (initialized)
+                return;
+            initialized = true;
             terrainMask = LayerMask.GetMask(SimSettings.TerrainLayer);
             robotMask = LayerMask.GetMask(SimSettings.RobotLayer);
             if (limits == null)
@@ -66,6 +80,10 @@ namespace BMB
             if (viewCamera == null)
                 viewCamera = Camera.main;
             RegisterTools();
+            StatusLines.Add(PayloadStatus);
+            StatusLines.Add(FrictionStatus);
+            if (frictionZones != null && controller != null)
+                controller.Zones = frictionZones;
         }
 
         void OnEnable() => Subscribe();
@@ -96,8 +114,125 @@ namespace BMB
         void RegisterTools()
         {
             tools.Clear();
-            foreach (var name in new[] { "Push", "Drag", "Ball", "Payload", "Friction", "Obstacle", "Deceptive terrain" })
-                tools.Add(new PlaceholderTool(name));
+            tools.Add(new PushTool());
+            tools.Add(new PlaceholderTool("Drag"));
+            tools.Add(new PlaceholderTool("Ball"));
+            tools.Add(new PayloadTool());
+            tools.Add(new FrictionTool());
+            tools.Add(new PlaceholderTool("Obstacle"));
+            tools.Add(new PlaceholderTool("Deceptive terrain"));
+        }
+
+        // --- disturbances: forces and payload ----------------------------------------------------------------
+
+        /// <summary>
+        /// Push like Isaac's push_by_setting_velocity: adds Δv to the base's world velocity (Isaac world axes x, y;
+        /// each axis clamped to the push range). Returns the Δv applied.
+        /// </summary>
+        public Vector2 Push(Vector2 dvIsaacWorld)
+        {
+            var dx = Limit(Quantity.PushAxis, dvIsaacWorld.x, out var ox);
+            var dy = Limit(Quantity.PushAxis, dvIsaacWorld.y, out var oy);
+            var root = controller.Body.Root;
+            root.linearVelocity += IsaacFrame.PolarFromIsaac(new Vector3(dx, dy, 0f));
+            Record("push", $"dv=({dx:F2}, {dy:F2}) m/s, |dv| {Mathf.Sqrt(dx * dx + dy * dy):F2}", ox || oy);
+            return new Vector2(dx, dy);
+        }
+
+        /// <summary>Random push with each axis uniform in ±<paramref name="maxAxis"/> (Isaac's velocity_range).</summary>
+        public Vector2 PushRandom(float maxAxis, System.Random rng) =>
+            Push(new Vector2((float)(rng.NextDouble() * 2 - 1) * maxAxis, (float)(rng.NextDouble() * 2 - 1) * maxAxis));
+
+        /// <summary>Payload on the base: added mass (kg) and COM offset (Isaac base axes, m), both clamped. (0, 0) removes it.</summary>
+        public void SetPayload(float addedMass, Vector3 comOffsetIsaac)
+        {
+            var m = Limit(Quantity.Payload, addedMass, out var om);
+            var cx = Limit(Quantity.ComXY, comOffsetIsaac.x, out var ox);
+            var cy = Limit(Quantity.ComXY, comOffsetIsaac.y, out var oy);
+            var cz = Limit(Quantity.ComZ, comOffsetIsaac.z, out var oz);
+            controller.Body.SetPayload(m, new Vector3(cx, cy, cz));
+            Record("payload", $"{m:+0.0;-0.0;0} kg, COM ({cx * 100:F0}, {cy * 100:F0}, {cz * 100:F0}) cm", om || ox || oy || oz);
+        }
+
+        // --- disturbances: ground friction ---------------------------------------------------------------------
+
+        /// <summary>Paints ground μ (clamped) in a disc; <paramref name="record"/> = false while a stroke is in progress.</summary>
+        public float PaintFriction(Vector3 centre, float radius, float mu, bool record = true)
+        {
+            var v = Limit(Quantity.Friction, mu, out var outside);
+            var cells = RequireZones().Paint(centre, radius, v);
+            if (record)
+                Record("friction", $"zone μ {v:F2}, r {radius:F1} m at {FormatGround(centre)} ({cells} cells)", outside);
+            return v;
+        }
+
+        public void EraseFriction(Vector3 centre, float radius, bool record = true)
+        {
+            var cells = RequireZones().Erase(centre, radius);
+            if (record)
+                Record("friction", $"erased r {radius:F1} m at {FormatGround(centre)} ({cells} cells)", false);
+        }
+
+        /// <summary>Ground μ wherever nothing is painted (1.0 = normal ground). Like Isaac's mu_drop when changed mid-run.</summary>
+        public float SetGlobalFriction(float mu)
+        {
+            var v = Limit(Quantity.Friction, mu, out var outside);
+            RequireZones().GlobalMu = v;
+            Record("friction", $"global ground μ {v:F2}", outside);
+            return v;
+        }
+
+        public void ClearFriction()
+        {
+            RequireZones().ClearAll();
+            Record("friction", "all zones cleared", false);
+        }
+
+        FrictionZones RequireZones()
+        {
+            if (frictionZones == null)
+            {
+                frictionZones = new GameObject("FrictionZones").AddComponent<FrictionZones>();
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(frictionZones.gameObject, gameObject.scene);
+            }
+            if (controller != null && controller.Zones != frictionZones)
+                controller.Zones = frictionZones;
+            return frictionZones;
+        }
+
+        static string FormatGround(Vector3 unityPoint)
+        {
+            var p = IsaacFrame.PolarToIsaac(unityPoint);
+            return $"({p.x:F1}, {p.y:F1})";
+        }
+
+        // --- HUD lines -------------------------------------------------------------------------------------------
+
+        string PayloadStatus()
+        {
+            var b = controller.Body;
+            if (b.AddedMass == 0f && b.ComOffset == Vector3.zero)
+                return "Payload: none";
+            limits.Clamp(Quantity.Payload, b.AddedMass, false, out var outside);
+            var text = $"Payload: {b.AddedMass:+0.0;-0.0} kg, COM ({b.ComOffset.x * 100:F0}, {b.ComOffset.y * 100:F0}, {b.ComOffset.z * 100:F0}) cm";
+            return outside ? $"<color=#ff5a4a>{text}</color>" : text;
+        }
+
+        string FrictionStatus()
+        {
+            var f = controller.FootFriction;
+            if (f == null)
+                return "";
+            var sb = new System.Text.StringBuilder("Foot μ:");
+            for (var i = 0; i < 4; i++)
+            {
+                var mu = f.EffectiveStatic(i);
+                var name = Go2Body.FootNames[i].Substring(0, 2);
+                sb.Append(mu < 0.5f ? $" {name} <color=#6fb7ff>{mu:F2}</color>" : $" {name} {mu:F2}");
+            }
+            if (frictionZones != null)
+                sb.Append($"   ground: global {frictionZones.GlobalMu:F2}, {frictionZones.PaintedCells} cells painted");
+            return sb.ToString();
         }
 
         /// <summary>Replace the tool in slot <paramref name="index"/> (0-based; key = index + 1).</summary>

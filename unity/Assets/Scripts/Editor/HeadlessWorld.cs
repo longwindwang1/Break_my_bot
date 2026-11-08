@@ -87,6 +87,16 @@ namespace BMB.Editor
             return controller;
         }
 
+        /// <summary>A disturbance manager (with its own friction map) for one robot, ready for API calls.</summary>
+        public DisturbanceManager AddDisturbances(Go2Controller robot, bool hardMode = false)
+        {
+            var zones = Add(new GameObject($"FrictionZones_{robot.name}")).AddComponent<FrictionZones>();
+            var manager = Add(new GameObject($"Disturbances_{robot.name}")).AddComponent<DisturbanceManager>();
+            manager.Configure(robot, DisturbanceLimits.CreateDefault(), null, zones);
+            manager.HardMode = hardMode;
+            return manager;
+        }
+
         /// <summary>One physics step: every robot's control step, then the physics.</summary>
         public void Step()
         {
