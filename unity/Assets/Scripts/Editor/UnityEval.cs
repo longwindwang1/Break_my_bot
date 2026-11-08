@@ -81,6 +81,8 @@ namespace BMB.Editor
         /// <summary>Mean time of the falls (s); NaN without falls.</summary>
         public float MeanFallTime;
         public float WallSeconds;
+        /// <summary>PhysX solver of the run (project setting): "PGS" or "TGS" (Isaac Lab uses TGS).</summary>
+        public string Solver = "PGS";
 
         public string ToJson()
         {
@@ -88,7 +90,7 @@ namespace BMB.Editor
             return "{" +
                    $"\"scenario\": \"{Scenario}\", \"policy\": \"{Policy}\", \"variant\": \"{Variant}\", \"model\": \"{Model}\", \"sim\": \"unity\", " +
                    $"\"envs\": {Envs}, \"success_rate\": {F(SuccessRate)}, \"tracking_error\": {F(TrackingError)}, \"slip_speed\": {F(SlipSpeed)}, " +
-                   $"\"mean_fall_time\": {F(MeanFallTime)}, \"seed\": {Seed}, \"steps\": {Steps}, \"wall_seconds\": {F(WallSeconds)}" +
+                   $"\"mean_fall_time\": {F(MeanFallTime)}, \"solver\": \"{Solver}\", \"seed\": {Seed}, \"steps\": {Steps}, \"wall_seconds\": {F(WallSeconds)}" +
                    "}";
         }
     }
@@ -116,7 +118,9 @@ namespace BMB.Editor
         sealed class Env
         {
             public Go2Controller Robot;
-            public int Policy;
+            public int Index, Policy;
+            public GroundFeature Tile;
+            public float Payload;
             public CommandSampler Commands;
             public System.Random PushRng;
             public float PushTimer;
@@ -128,9 +132,10 @@ namespace BMB.Editor
 
         /// <summary>
         /// Runs one scenario; yields the progress (0–1) after every policy step so a caller can spread the work over
-        /// editor frames. The rows (one per policy) are added to <paramref name="rows"/> at the end.
+        /// editor frames. The rows (one per policy) are added to <paramref name="rows"/> at the end, and one CSV line
+        /// per episode (<see cref="EpisodeHeader"/>) to <paramref name="episodes"/> if given.
         /// </summary>
-        public static IEnumerator<float> Run(EvalScenario scenario, EvalOptions o, List<EvalRow> rows)
+        public static IEnumerator<float> Run(EvalScenario scenario, EvalOptions o, List<EvalRow> rows, List<string> episodes = null)
         {
             var clock = Stopwatch.StartNew();
             var world = HeadlessWorld.Create(flatGround: false);
@@ -222,8 +227,16 @@ namespace BMB.Editor
                         Seed = o.Seed,
                         Steps = steps,
                         WallSeconds = (float)clock.Elapsed.TotalSeconds,
+                        Solver = SolverName,
                     });
                 }
+                if (episodes != null)
+                    foreach (var e in envs)
+                        episodes.Add(string.Join(",", scenario.Name, o.Policies[e.Policy].Name, e.Index.ToString(), e.Tile.tile.ToString(),
+                            e.Tile.difficulty.ToString("0.000", CultureInfo.InvariantCulture), e.Payload.ToString("0.00", CultureInfo.InvariantCulture),
+                            e.Alive ? "1" : "0", float.IsNaN(e.FallTime) ? "" : e.FallTime.ToString("0.00", CultureInfo.InvariantCulture),
+                            (e.TrackSum / Math.Max(1, e.AliveSteps)).ToString("0.000", CultureInfo.InvariantCulture),
+                            (e.SlipSum / Math.Max(1, e.AliveSteps)).ToString("0.000", CultureInfo.InvariantCulture)));
             }
             finally
             {
@@ -245,7 +258,7 @@ namespace BMB.Editor
             return rows;
         }
 
-        static LevelGround BuildArena(HeadlessWorld world, EvalScenario s, EvalOptions o, out List<Vector3> tiles)
+        static LevelGround BuildArena(HeadlessWorld world, EvalScenario s, EvalOptions o, out List<GroundFeature> tiles)
         {
             var n = o.TilesPerSide;
             var side = n * IsaacTiles.Size + 2f * o.Border;
@@ -253,12 +266,12 @@ namespace BMB.Editor
             var rng = new System.Random(o.Seed);  // same terrain for every scenario of a kind, like Isaac's seed 0
             var mix = s.Pits ? new[] { (IsaacTileType.Pits, 1f) } : IsaacTiles.V2Mix;
             var difficulty = s.Pits ? new Vector2(0.5f, 1f) : new Vector2(0f, 0.5f);
-            tiles = new List<Vector3>();
+            tiles = new List<GroundFeature>();
             for (var r = 0; r < n; r++)
             for (var c = 0; c < n; c++)
             {
                 var centre = new Vector2((c - (n - 1) / 2f) * IsaacTiles.Size, (r - (n - 1) / 2f) * IsaacTiles.Size);
-                level.Add(new GroundFeature
+                var f = new GroundFeature
                 {
                     type = GroundFeatureType.IsaacTile,
                     tile = IsaacTiles.Sample(rng, mix),
@@ -266,15 +279,16 @@ namespace BMB.Editor
                     seed = rng.Next(),
                     centre = centre,
                     size = new Vector2(IsaacTiles.Size, IsaacTiles.Size),
-                }, refresh: false);
-                tiles.Add(new Vector3(centre.x, 0f, centre.y));
+                };
+                level.Add(f, refresh: false);
+                tiles.Add(f);
             }
             level.Refresh();
             Physics.SyncTransforms();
             return level;
         }
 
-        static List<Env> SpawnRobots(HeadlessWorld world, EvalScenario s, EvalOptions o, List<Vector3> tiles, List<PolicyRunner> runners)
+        static List<Env> SpawnRobots(HeadlessWorld world, EvalScenario s, EvalOptions o, List<GroundFeature> tiles, List<PolicyRunner> runners)
         {
             var itf = world.Interface;
             var cautious = itf.Policy("v2").CautiousGait;
@@ -292,6 +306,7 @@ namespace BMB.Editor
                 // Everything random about env e is drawn once and shared by all policies (paired comparison).
                 var rng = new System.Random(unchecked(o.Seed * 7919 + e * 104729 + 13));
                 var tile = tiles[order[e % order.Length]];
+                var tileCentre = new Vector3(tile.centre.x, 0f, tile.centre.y);  // LevelGround sits at the origin
                 var offset = IsaacFrame.PolarFromIsaac(new Vector3(Uniform(rng, -0.5f, 0.5f), Uniform(rng, -0.5f, 0.5f), 0f));
                 var yaw = Uniform(rng, -180f, 180f);
                 var mass = Uniform(rng, -1f, 3f);
@@ -308,7 +323,7 @@ namespace BMB.Editor
 
                 for (var p = 0; p < o.Policies.Length; p++)
                 {
-                    var robot = world.AddRobot(o.Policies[p].Variant, tile + offset, yaw, footFriction: s.FootMu,
+                    var robot = world.AddRobot(o.Policies[p].Variant, tileCentre + offset, yaw, footFriction: s.FootMu,
                                                resetOnFall: false, sharedPolicy: runners[p]);
                     robot.SetFallCriteria(0f, 0f);  // base contact only
                     if (o.RandomizeDynamics)
@@ -325,7 +340,10 @@ namespace BMB.Editor
                     envs.Add(new Env
                     {
                         Robot = robot,
+                        Index = e,
                         Policy = p,
+                        Tile = tile,
+                        Payload = o.RandomizeDynamics ? mass : 0f,
                         Commands = sampler,
                         PushRng = pushRng,
                         PushTimer = Uniform(pushRng, PushInterval0, PushInterval1),
@@ -414,11 +432,30 @@ namespace BMB.Editor
             return sb.ToString();
         }
 
-        public static void WriteSummary(EvalPolicy[] policies = null)
+        /// <summary>summary{suffix}.md from results{suffix}.jsonl (suffix "" for the main run, e.g. "_tgs" for a variant).</summary>
+        public static void WriteSummary(EvalPolicy[] policies = null, string suffix = "")
         {
             policies ??= new[] { EvalPolicy.V1, EvalPolicy.V2 };
-            var md = Summary(Path.Combine(OutputDir, "results.jsonl"), IsaacResults, policies);
-            File.WriteAllText(Path.Combine(OutputDir, "summary.md"), "# Unity vs Isaac: v2_eval scenarios\n\n" + md);
+            var md = Summary(Path.Combine(OutputDir, $"results{suffix}.jsonl"), IsaacResults, policies);
+            File.WriteAllText(Path.Combine(OutputDir, $"summary{suffix}.md"), "# Unity vs Isaac: v2_eval scenarios\n\n" + md);
+        }
+
+        public const string EpisodeHeader = "scenario,policy,env,tile,difficulty,payload_kg,success,fall_time_s,tracking_error,slip_speed";
+
+        // --- PhysX solver (project setting) ----------------------------------------------------------------------
+
+        static SerializedObject DynamicsSettings() =>
+            new SerializedObject(AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/DynamicsManager.asset")[0]);
+
+        /// <summary>"PGS" or "TGS": the solver new physics scenes are created with (Isaac Lab's default is TGS).</summary>
+        public static string SolverName => DynamicsSettings().FindProperty("m_SolverType").intValue == 1 ? "TGS" : "PGS";
+
+        /// <summary>Switches the project's PhysX solver (Project Settings > Physics > Solver Type).</summary>
+        public static void SetSolver(bool tgs)
+        {
+            var so = DynamicsSettings();
+            so.FindProperty("m_SolverType").intValue = tgs ? 1 : 0;
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         // --- background job + menus --------------------------------------------------------------------------------
@@ -427,13 +464,16 @@ namespace BMB.Editor
         static int progressId = -1;
         static Stopwatch jobClock;
 
-        static IEnumerator<float> RunAll(IReadOnlyList<EvalScenario> scenarios, EvalOptions o, string path)
+        static IEnumerator<float> RunAll(IReadOnlyList<EvalScenario> scenarios, EvalOptions o, string suffix)
         {
+            var path = Path.Combine(OutputDir, $"results{suffix}.jsonl");
+            var episodesPath = Path.Combine(OutputDir, $"episodes{suffix}.csv");
             var total = Stopwatch.StartNew();
             for (var i = 0; i < scenarios.Count; i++)
             {
                 var rows = new List<EvalRow>();
-                using var it = Run(scenarios[i], o, rows);  // disposing the job disposes this: the world closes
+                var episodes = new List<string>();
+                using var it = Run(scenarios[i], o, rows, episodes);  // disposing the job disposes this: the world closes
                 while (it.MoveNext())
                 {
                     if (progressId >= 0)
@@ -441,31 +481,35 @@ namespace BMB.Editor
                     yield return (i + it.Current) / scenarios.Count;
                 }
                 AppendResults(path, rows);
+                File.AppendAllLines(episodesPath, episodes);
                 foreach (var r in rows)
                     Debug.Log($"[BMB] eval {r.Scenario,-16} {r.Policy,-3} success {r.SuccessRate:P1}  track {r.TrackingError:F3}  slip {r.SlipSpeed:F3}  ({r.WallSeconds:F0} s)");
-                WriteSummary(o.Policies);
+                WriteSummary(o.Policies, suffix);
             }
-            Debug.Log($"[BMB] eval done in {total.Elapsed.TotalMinutes:F1} min: {Path.Combine(OutputDir, "summary.md")}");
+            Debug.Log($"[BMB] eval done in {total.Elapsed.TotalMinutes:F1} min: {Path.Combine(OutputDir, $"summary{suffix}.md")}");
         }
 
-        /// <summary>Starts a background evaluation (results.jsonl is rewritten from scratch).</summary>
-        public static void Start(IReadOnlyList<EvalScenario> scenarios, EvalOptions o)
+        /// <summary>
+        /// Starts a background evaluation writing results{suffix}.jsonl, episodes{suffix}.csv and summary{suffix}.md
+        /// in experiments/unity_eval (rewritten from scratch).
+        /// </summary>
+        public static void Start(IReadOnlyList<EvalScenario> scenarios, EvalOptions o, string suffix = "")
         {
             if (job != null)
             {
                 Debug.LogWarning("[BMB] an evaluation is already running (BMB/Eval/Cancel)");
                 return;
             }
-            var path = Path.Combine(OutputDir, "results.jsonl");
             Directory.CreateDirectory(OutputDir);
-            File.WriteAllText(path, "");
-            job = RunAll(scenarios, o, path);
+            File.WriteAllText(Path.Combine(OutputDir, $"results{suffix}.jsonl"), "");
+            File.WriteAllText(Path.Combine(OutputDir, $"episodes{suffix}.csv"), EpisodeHeader + "\n");
+            job = RunAll(scenarios, o, suffix);
             jobClock = Stopwatch.StartNew();
             progressId = Progress.Start("BMB evaluation", $"{scenarios.Count} scenarios × {o.Policies.Length} policies × {o.EnvsPerPolicy} envs");
             Progress.RegisterCancelCallback(progressId, () => { Stop("cancelled"); return true; });
             EditorApplication.update += Tick;
             AssemblyReloadEvents.beforeAssemblyReload += OnReload;
-            Debug.Log($"[BMB] eval started: {string.Join(", ", scenarios.Select(s => s.Name))}; {o.EnvsPerPolicy} envs per policy, {o.EpisodeSeconds} s");
+            Debug.Log($"[BMB] eval started ({SolverName} solver): {string.Join(", ", scenarios.Select(s => s.Name))}; {o.EnvsPerPolicy} envs per policy, {o.EpisodeSeconds} s");
         }
 
         public static bool Running => job != null;

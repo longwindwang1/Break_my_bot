@@ -18,6 +18,10 @@ and adapt online.
   Robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student) done: `export/models/go2_v2.onnx` (student, 1360-d input),
   parity tests pass; at foot μ 0.1 it survives 90 % vs 52 % for v1 (`experiments/v2_eval/`).
   Open: pit / deceptive-scan test does not discriminate (pits too shallow); pushes not better than v1.
+- Unity, ahead of schedule (branch `unity-game`): disturbance playground (`Playground` scene, 7 tools, neon HUD) and
+  the v2_eval scenarios in Unity physics (`experiments/unity_eval/`, Experiment 3): at μ 1.0 / 0.5 and with
+  pushes v2 keeps 92–97 % (Isaac 95–98 %), v1 drops to 66–78 % (Isaac 95–98 %); low friction costs both more than
+  in Isaac.
 
 ## Two machines (this file is shared by both)
 - **Linux** (training): Isaac Lab, PyTorch, ONNX export, parity tests. Every command under "Commands" assumes it.
@@ -29,7 +33,7 @@ and adapt online.
   `configs/robot_interface.yaml` / handoff §5–7, never typed in from memory.
   `*.onnx` is gitignored except under `export/models/`; Unity's copies (`unity/Assets/Resources/BMB/Models/`,
   made by `BMB/Sync models`) are gitignored on purpose.
-  Unity work happens on the `unity-w3` branch until merged; it merges `origin/main` to pick up new models.
+  Unity work happens on a feature branch (now `unity-game`) until merged; it merges `origin/main` to pick up new models.
 
 ## Architecture
 Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play)
@@ -46,7 +50,7 @@ isaac/        launchers (train.py/play.py), our tasks (bmb_tasks/), training wra
 models/       world model, adaptation module, training code (PyTorch)  [not created yet]
 export/       ONNX export + parity tests; deployable models in export/models/ (tracked for the Unity machine)
 unity/        Unity 6000.3.8f1 project: Assets/Scripts/{Runtime,Editor,Tests/EditMode}, Assets/Robots (URDF, Go2.prefab),
-              Assets/Scenes (W3_Flat, W3_Rough)
+              Assets/Scenes (W3_Flat, W3_Rough, Playground), Assets/UI (HUD), Assets/Game (limits, materials)
 configs/      shared configs, incl. robot_interface.yaml
 experiments/  results, plots, notes per experiment
 docs/         design notes
@@ -76,6 +80,12 @@ docs/         design notes
   ArticulationBody velocity caps / solver iterations are not serialized: `Go2Body.ApplyRuntimeSettings`.
 - Reference data (`experiments/w3_reference/*.json`) is read from the repo by the tests; nothing is duplicated into Assets
   except the ONNX copies Unity must import.
+- Game: every disturbance goes through `DisturbanceManager` (push, drag, ball, payload, friction zones, obstacles,
+  deceptive terrain), which clamps it to `DisturbanceLimits` (v2 training ranges, or hard mode) and logs an event.
+  Tools (keys 1–7) only turn input into those calls. Ground is `LevelGround` (editable 0.1 m heightfield; `IsaacTiles`
+  ports Isaac's sub-terrains); `FrictionZones` + `FootFrictionDriver` set per-foot μ like v2's training. HUD: UI Toolkit
+  (`GameUI`, `Assets/UI/`). Headless runs and tests use `HeadlessWorld` (preview scene, many robots, stepped by hand).
+- Physics: PGS solver, 4/1 iterations (Isaac uses TGS 4/0; switching to TGS did not change the eval, see `unity_eval`).
 
 ## Core specs
 - Robot: Unitree Go2, same official URDF in Isaac Lab and Unity
@@ -147,8 +157,11 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
 
 Unity (Windows; editor menu or MCP `execute_menu_item`):
 - After pulling new models: `BMB/Sync models`; after yaml / reference changes: `BMB/Apply interface settings`, `BMB/Setup Go2`
-- Scenes: `BMB/Build W3_Flat scene`, `BMB/Build W3_Rough scene` (Play needs the editor in the foreground)
+- Scenes: `BMB/Build W3_Flat scene`, `BMB/Build W3_Rough scene`, `BMB/Build Playground scene` (the game; F1 in Play
+  lists the controls). Play needs the editor in the foreground.
 - Unity vs Isaac report: `BMB/Headless trials/Run all and write report` → `experiments/w3_unity/trials.md`
+- Isaac eval scenarios in Unity: `BMB/Eval/Run Isaac scenarios (v1 + v2, 64 envs)` (background job, ~10 min, cancel from
+  the progress bar; entering Play or recompiling stops it) → `experiments/unity_eval/{results.jsonl, episodes.csv, summary.md}`
 - Tests: MCP `run_tests` (EditMode, assembly `BMB.Tests.EditMode`), or with the project closed:
   `Unity.exe -batchmode -projectPath unity -runTests -testPlatform EditMode -testResults results.xml`.
   Keep a saved scene open: a modified untitled scene makes the test runner block on a save dialog.
