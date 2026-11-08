@@ -121,11 +121,19 @@ namespace BMB.Editor
         public void Step()
         {
             foreach (var r in robots)
-                r.ControlStep();
+                if (r.gameObject.activeSelf)
+                    r.ControlStep();
             foreach (var level in levels)
                 foreach (var cover in level.Covers.ToArray())
                     cover.Tick(Interface.Timing.PhysicsDt);
             Physics.Simulate(Interface.Timing.PhysicsDt);
+        }
+
+        /// <summary>Takes a robot out of the simulation (its body leaves the physics scene, its control stops).</summary>
+        public void Retire(Go2Controller robot)
+        {
+            robot.Body.gameObject.SetActive(false);
+            robot.gameObject.SetActive(false);
         }
 
         public void Run(float seconds, Action afterStep = null)

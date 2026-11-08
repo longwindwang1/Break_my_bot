@@ -137,6 +137,7 @@ namespace BMB
         public static readonly string[] FootNames = { "FL_foot", "FR_foot", "RL_foot", "RR_foot" };
 
         Transform[] feet;
+        ArticulationBody[] footBodies;
         Collider[][] footColliders;
         PhysicsMaterial[] footMaterials;
 
@@ -147,12 +148,14 @@ namespace BMB
             var bodies = rootBody.GetComponentsInChildren<ArticulationBody>(true);
             var colliders = rootBody.GetComponentsInChildren<Collider>(true);
             feet = new Transform[FootNames.Length];
+            footBodies = new ArticulationBody[FootNames.Length];
             footColliders = new Collider[FootNames.Length][];
             footMaterials = new PhysicsMaterial[FootNames.Length];
             for (var i = 0; i < FootNames.Length; i++)
             {
                 var foot = bodies.Single(b => b.name == FootNames[i]);
                 feet[i] = foot.transform;
+                footBodies[i] = foot;
                 footColliders[i] = colliders.Where(c => c.GetComponentInParent<ArticulationBody>() == foot).ToArray();
                 footMaterials[i] = new PhysicsMaterial($"Go2_{FootNames[i]}_runtime") { hideFlags = HideFlags.DontSave, bounciness = 0f, bounceCombine = PhysicsMaterialCombine.Multiply };
             }
@@ -163,6 +166,39 @@ namespace BMB
         {
             FindFeet();
             return feet[foot].position;
+        }
+
+        /// <summary>World linear velocity of a foot body (Unity frame).</summary>
+        public Vector3 FootVelocity(int foot)
+        {
+            FindFeet();
+            return footBodies[foot].linearVelocity;
+        }
+
+        /// <summary>
+        /// A foot touches the given layers: its collider grown by <paramref name="margin"/> overlaps them (the
+        /// evaluation's stand-in for Isaac's "contact force > 1 N", without contact callbacks).
+        /// </summary>
+        public bool FootTouches(int foot, PhysicsScene physics, int layerMask, float margin = 0.003f)
+        {
+            FindFeet();
+            foreach (var c in footColliders[foot])
+            {
+                if (c is SphereCollider s)
+                {
+                    var t = s.transform;
+                    var r = s.radius * Mathf.Max(Mathf.Abs(t.lossyScale.x), Mathf.Abs(t.lossyScale.y), Mathf.Abs(t.lossyScale.z));
+                    if (physics.OverlapSphere(t.TransformPoint(s.center), r + margin, overlapHits, layerMask, QueryTriggerInteraction.Ignore) > 0)
+                        return true;
+                }
+                else
+                {
+                    var b = c.bounds;
+                    if (physics.OverlapBox(b.center, b.extents + Vector3.one * margin, overlapHits, Quaternion.identity, layerMask, QueryTriggerInteraction.Ignore) > 0)
+                        return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>

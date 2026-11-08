@@ -123,8 +123,8 @@ namespace BMB
         {
             tools.Clear();
             tools.Add(new PushTool());
-            tools.Add(new PlaceholderTool("Drag", NeonIconKind.Drag));
-            tools.Add(new PlaceholderTool("Ball", NeonIconKind.Ball));
+            tools.Add(new DragTool());
+            tools.Add(new BallTool());
             tools.Add(new PayloadTool());
             tools.Add(new FrictionTool());
             tools.Add(new ObstacleTool());
@@ -166,6 +166,129 @@ namespace BMB
             var cz = Limit(Quantity.ComZ, comOffsetIsaac.z, out var oz);
             controller.Body.SetPayload(m, new Vector3(cx, cy, cz));
             Record("payload", $"{m:+0.0;-0.0;0} kg, COM ({cx * 100:F0}, {cy * 100:F0}, {cz * 100:F0}) cm", om || ox || oy || oz);
+        }
+
+        /// <summary>
+        /// External force on a robot link at a world point (drag tool), its magnitude clamped to the drag-force limit.
+        /// Call it every physics step while pulling; not logged (the caller records one event per drag).
+        /// Returns the force applied.
+        /// </summary>
+        public Vector3 ApplyDragForce(ArticulationBody link, Vector3 worldPoint, Vector3 force, out bool outsideTraining)
+        {
+            var magnitude = Limit(Quantity.DragForce, force.magnitude, out outsideTraining);
+            var f = force.sqrMagnitude > 0f ? force.normalized * magnitude : Vector3.zero;
+            link.AddForceAtPosition(f, worldPoint);
+            return f;
+        }
+
+        // --- disturbances: balls ------------------------------------------------------------------------------
+
+        public const float BallLifetime = 10f;
+        readonly List<Rigidbody> balls = new List<Rigidbody>();
+        Material ballMaterial;
+        PhysicsMaterial ballBounce;
+
+        public IReadOnlyList<Rigidbody> Balls => balls;
+
+        /// <summary>Ball radius for a mass (m): solid rubber-ish, 0.5 kg ≈ 8.5 cm.</summary>
+        public static float BallRadius(float mass) => 0.05f * Mathf.Pow(Mathf.Max(mass, 0.01f) / 0.1f, 1f / 3f);
+
+        /// <summary>
+        /// Launch velocity from <paramref name="origin"/> that lands on <paramref name="target"/> at the given speed
+        /// (the low ballistic arc); straight at the target if it is out of reach.
+        /// </summary>
+        public static Vector3 AimVelocity(Vector3 origin, Vector3 target, float speed)
+        {
+            var d = target - origin;
+            var flat = new Vector3(d.x, 0f, d.z);
+            var x = flat.magnitude;
+            if (x < 1e-3f)
+                return d.normalized * speed;
+            var g = -UnityEngine.Physics.gravity.y;
+            var v2 = speed * speed;
+            var disc = v2 * v2 - g * (g * x * x + 2f * d.y * v2);
+            var angle = disc >= 0f ? Mathf.Atan((v2 - Mathf.Sqrt(disc)) / (g * x)) : Mathf.Atan2(d.y, x);
+            return flat / x * (Mathf.Cos(angle) * speed) + Vector3.up * (Mathf.Sin(angle) * speed);
+        }
+
+        /// <summary>
+        /// Throws a ball (Default layer: hits the robot and the ground, invisible to the height scan). Momentum m·|v| is
+        /// clamped by lowering the speed. Removed after <see cref="BallLifetime"/> s (play mode). Returns its body.
+        /// </summary>
+        public Rigidbody ThrowBall(Vector3 origin, Vector3 velocity, float mass)
+        {
+            mass = Mathf.Max(mass, 0.01f);
+            var p = Limit(Quantity.BallMomentum, mass * velocity.magnitude, out var outside);
+            var v = velocity.sqrMagnitude > 0f ? velocity.normalized * (p / mass) : Vector3.zero;
+
+            var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            go.name = "Ball";
+            UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(go, gameObject.scene);
+            var r = BallRadius(mass);
+            go.transform.SetPositionAndRotation(origin, Quaternion.identity);
+            go.transform.localScale = Vector3.one * (2f * r);
+            ballBounce ??= new PhysicsMaterial("BallBounce") { hideFlags = HideFlags.DontSave, bounciness = 0.4f, staticFriction = 0.6f, dynamicFriction = 0.5f };
+            go.GetComponent<Collider>().sharedMaterial = ballBounce;
+            var renderer = go.GetComponent<MeshRenderer>();
+            if (BallMaterial() is { } mat)
+                renderer.sharedMaterial = mat;
+            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+
+            var body = go.AddComponent<Rigidbody>();
+            body.mass = mass;
+            body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+            body.interpolation = RigidbodyInterpolation.Interpolate;
+            body.linearVelocity = v;
+            var projectile = go.AddComponent<BallProjectile>();
+            projectile.Manager = this;
+            projectile.Mass = mass;
+            if (Application.isPlaying)
+            {
+                AddTrail(go, r);
+                Destroy(go, BallLifetime);
+            }
+            balls.RemoveAll(b => b == null);
+            balls.Add(body);
+            Record("ball", $"thrown: {mass:F1} kg at {v.magnitude:F1} m/s, p {p:F1} N·s", outside);
+            return body;
+        }
+
+        public void ClearBalls()
+        {
+            foreach (var b in balls)
+                if (b != null)
+                {
+                    if (Application.isPlaying) Destroy(b.gameObject);
+                    else DestroyImmediate(b.gameObject);
+                }
+            balls.Clear();
+        }
+
+        Material BallMaterial()
+        {
+            if (ballMaterial != null || !Application.isPlaying)
+                return ballMaterial;
+            var shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null)
+                return null;
+            ballMaterial = new Material(shader) { name = "Ball" };
+            var colour = new Color(1f, 0.45f, 0.08f);
+            ballMaterial.SetColor("_BaseColor", colour);
+            ballMaterial.EnableKeyword("_EMISSION");
+            ballMaterial.SetColor("_EmissionColor", colour * 1.5f);
+            return ballMaterial;
+        }
+
+        static void AddTrail(GameObject go, float radius)
+        {
+            var trail = go.AddComponent<TrailRenderer>();
+            trail.time = 0.35f;
+            trail.widthMultiplier = radius * 1.4f;
+            trail.widthCurve = AnimationCurve.Linear(0f, 1f, 1f, 0f);
+            trail.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            trail.sharedMaterial = new Material(Shader.Find("Sprites/Default"));
+            trail.startColor = new Color(1f, 0.55f, 0.1f, 0.8f);
+            trail.endColor = new Color(1f, 0.17f, 0.84f, 0f);
         }
 
         // --- disturbances: ground friction ---------------------------------------------------------------------

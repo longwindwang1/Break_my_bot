@@ -44,6 +44,7 @@ namespace BMB
         bool ownsPolicy;
         ObservationBuilder builder;
         float[] obs, actions, lastAction, qTarget, q, qd, tau, scan;
+        float[] kpScale, kdScale;
         HeightScanner scanner;
         FootFrictionDriver footDriver;
         PhysicsScene physics;
@@ -130,6 +131,15 @@ namespace BMB
         {
             fallTiltDeg = tiltDeg;
             fallHeight = minBaseHeight;
+        }
+
+        /// <summary>
+        /// Per-joint actuator gain scales (policy order), like v2's randomize_actuator_gains; null = nominal gains.
+        /// </summary>
+        public void SetGainScales(float[] stiffnessScale, float[] dampingScale)
+        {
+            kpScale = stiffnessScale;
+            kdScale = dampingScale;
         }
 
         /// <summary>Where the robot returns on reset (Unity frame; y is recomputed from the terrain).</summary>
@@ -219,7 +229,7 @@ namespace BMB
             body.ReadJoints(q, qd);
             if (physicsStep % itf.Timing.Decimation == 0)
                 PolicyStep();
-            DCMotor.Torques(qTarget, q, qd, itf.Actuator, tau);
+            DCMotor.Torques(qTarget, q, qd, itf.Actuator, tau, kpScale, kdScale);
             body.SetJointTorques(tau);
             footDriver.Update();
             physicsStep++;

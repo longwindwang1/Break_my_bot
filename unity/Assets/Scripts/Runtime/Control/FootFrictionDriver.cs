@@ -11,7 +11,8 @@ namespace BMB
     public sealed class FootFrictionDriver
     {
         readonly Go2Body body;
-        readonly float baseStatic, baseDynamic;
+        readonly RobotInterface itf;
+        float baseStatic, baseDynamic;
         readonly PhysicsMaterialCombine combine;
         readonly float[] applied = { float.NaN, float.NaN, float.NaN, float.NaN };
 
@@ -26,7 +27,17 @@ namespace BMB
         public FootFrictionDriver(Go2Body body, RobotInterface itf, float footFriction)
         {
             this.body = body;
+            this.itf = itf;
             combine = itf.Friction.UnityCombineMode();
+            SetFootMu(footFriction);
+        }
+
+        /// <summary>
+        /// Changes the foot base μ mid-run (like Isaac's randomize_foot_friction event, e.g. the eval's mu_drop);
+        /// ≤ 0 = the v1 material. Applied at once.
+        /// </summary>
+        public void SetFootMu(float footFriction)
+        {
             if (footFriction > 0f)
             {
                 baseStatic = footFriction;
@@ -37,6 +48,8 @@ namespace BMB
                 baseStatic = itf.Friction.V1Foot[0];
                 baseDynamic = itf.Friction.V1Foot[1];
             }
+            for (var i = 0; i < applied.Length; i++)
+                applied[i] = float.NaN;
             Update();
         }
 
