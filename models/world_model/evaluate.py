@@ -28,9 +28,9 @@ from isaac.interface import load_interface
 
 from .dataset import WMData, val_envs
 from .ensemble import WorldModel, load_model
-from .surprisal import cusum, cusum_alarm_counts, score, state_term_slices, weights, zscores
+from .surprisal import SPIKE_DIMS, cusum, cusum_alarm_counts, score, spike_stat, state_term_slices, weights, zscores
 
-KEY_EVENTS = ["mu_0.1", "mu_0.05", "foot_0.05", "push_1.0"]
+KEY_EVENTS = ["mu_0.1", "mu_0.05", "foot_0.05", "push_0.5", "push_1.0"]
 
 
 # --- helpers ------------------------------------------------------------------------------------------
@@ -92,39 +92,48 @@ def tile_names(d: WMData) -> np.ndarray:
 
 
 # --- 1. one-step calibration --------------------------------------------------------------------------
-def one_step(d: WMData, P: dict, mask: torch.Tensor, model: WorldModel) -> dict:
-    S = d.layout.state_dim
-    y = true_delta(d)
-    mu, var = P["delta_mean"][..., :S], P["delta_var"][..., :S]
+def one_step_stats(y: torch.Tensor, mu: torch.Tensor, var: torch.Tensor, model: WorldModel) -> dict:
+    """y, mu, var: [M, S] selected transitions (raw units)."""
+    S = y.shape[1]
     z = (y - mu) / var.sqrt()
-    m = mask
-    res = {"count": int(m.sum())}
+    res = {"count": int(len(y))}
     for name, sl in state_term_slices() + [("all", slice(0, S))]:
-        zz, err = z[m][:, sl], (y - mu)[m][:, sl]
+        zz, err, v = z[:, sl], (y - mu)[:, sl], var[:, sl]
         res[name] = {
             "rmse": float(err.pow(2).mean().sqrt()),
-            "rmse_zero_delta": float(y[m][:, sl].pow(2).mean().sqrt()),
+            "rmse_zero_delta": float(y[:, sl].pow(2).mean().sqrt()),
             "z_std": float(zz.std()),
             "cov_1sigma": float((zz.abs() < 1).float().mean()),
             "cov_2sigma": float((zz.abs() < 2).float().mean()),
-            "nll_norm": float((0.5 * (zz**2 + torch.log(2 * np.pi * var[m][:, sl] / model.out_std[sl] ** 2))).mean()),
-            "sigma_over_delta_std": float((var[m][:, sl].sqrt() / model.out_std[sl]).median()),
+            "nll_norm": float((0.5 * (zz**2 + torch.log(2 * np.pi * v / model.out_std[sl] ** 2))).mean()),
+            "sigma_over_delta_std": float((v.sqrt() / model.out_std[sl]).flatten()[:4_000_000].median()),
         }
     return res
 
 
 def one_step_breakdown(d: WMData, P: dict, base_mask: torch.Tensor, model: WorldModel) -> dict:
-    out = {"all": one_step(d, P, base_mask, model)}
-    pid = d.policy_id[:, None].expand(-1, d.T)
+    """1-step statistics over base_mask, overall and by policy, friction and terrain type."""
+    S = d.layout.state_dim
+    m = base_mask
+    y = true_delta(d)[m]
+    mu = P["delta_mean"][..., :S][m]
+    var = P["delta_var"][..., :S][m]
+    groups = {"all": None}
+    pid = d.policy_id[:, None].expand(-1, d.T)[m]
     for i, name in enumerate(d.layout.policies):
-        out[f"policy_{name}"] = one_step(d, P, base_mask & (pid == i), model)
-    mu_min = torch.from_numpy(d.foot_mu.min(-1)).to(base_mask.device)
-    out["friction_ice(<0.3)"] = one_step(d, P, base_mask & (mu_min < 0.3), model)
-    out["friction_normal(>=0.6)"] = one_step(d, P, base_mask & (mu_min >= 0.6), model)
-    names = tile_names(d)
-    for tname in sorted(set(names.ravel()) - {"border", ""}):
-        m = torch.from_numpy(names == tname).to(base_mask.device)
-        out[f"terrain_{tname}"] = one_step(d, P, base_mask & m, model)
+        groups[f"policy_{name}"] = pid == i
+    mu_min = torch.from_numpy(d.foot_mu.min(-1)).to(m.device)[m]
+    groups["friction_ice(<0.3)"] = mu_min < 0.3
+    groups["friction_normal(>=0.6)"] = mu_min >= 0.6
+    names = tile_names(d)[m.cpu().numpy()]
+    for tname in sorted(set(names.tolist()) - {"border", ""}):
+        groups[f"terrain_{tname}"] = torch.from_numpy(names == tname).to(m.device)
+    out = {}
+    for g, sel in groups.items():
+        if sel is None:
+            out[g] = one_step_stats(y, mu, var, model)
+        elif sel.any():
+            out[g] = one_step_stats(y[sel], mu[sel], var[sel], model)
     return out
 
 
@@ -243,53 +252,69 @@ class Scorer:
 
 def calibrate(clean: Scorer, events: Scorer, ev_data: WMData, pits: Scorer | None, pits_data: WMData | None,
               target_far: float, policies: list[str], event_step: int, grid: dict) -> dict:
+    """Per policy: spike threshold at half the false-alarm budget (clean half A), then for every grid
+    configuration the smallest CUSUM h whose combined false-alarm rate (with the spike detector) meets the
+    budget on half A; verified on half B; detection on the events and pits splits."""
     dev = clean.z.device
     hs = torch.logspace(np.log10(0.2), np.log10(400.0), 160, device=dev)
     N = clean.z.shape[0]
     half_a = torch.arange(N, device=dev) % 2 == 0
-    rows = []
     ev_names = ev_data.meta["events"]
     ev_type = torch.from_numpy(ev_data.info["event_type"].astype(np.int64)).to(dev)
     reset_before = torch.from_numpy(ev_data.info["reset_before_event"]).to(dev)
     E = event_step
+    sp_clean, sp_ev = spike_stat(clean.z), spike_stat(events.z)
+    sp_pits = spike_stat(pits.z) if pits is not None else None
+    spike_thr = {}
+    for pi, pname in enumerate(policies):
+        pa = half_a & (clean.policy_id == pi)
+        v = sp_clean[pa][clean.scored[pa] & ~clean.prefall[pa]]
+        v = v[torch.randperm(len(v), device=dev)[:16_000_000]]
+        spike_thr[pname] = float(torch.quantile(v.float(), 1.0 - target_far / 2))
+    print(f"[eval] spike thresholds (max |z| of base_lin_vel x, y): {spike_thr}", flush=True)
+    rows = []
     for stat, wname, clip, k in itertools.product(grid["stat"], grid["weights"], grid["clip"], grid["k"]):
         w = torch.as_tensor(weights(wname), dtype=torch.float32, device=dev)
         S_clean, S_ev = clean.raw(w, clip, stat), events.raw(w, clip, stat)
         row = {"stat": stat, "weights": wname, "clip": clip, "k": k, "per_policy": {}}
         for pi, pname in enumerate(policies):
+            thr = spike_thr[pname]
             pa, pb = half_a & (clean.policy_id == pi), ~half_a & (clean.policy_id == pi)
             vals = S_clean[pa][clean.scored[pa]]
             m0, s0 = float(vals.mean()), float(vals.std())
             xa = (S_clean[pa] - m0) / s0
-            nf, _ = cusum_alarm_counts(xa, clean.scored[pa], clean.reset[pa], k, hs, clean.prefall[pa])
+            nf, _ = cusum_alarm_counts(xa, clean.scored[pa], clean.reset[pa], k, hs, clean.prefall[pa], sp_clean[pa] > thr)
             far = nf.float() / clean.scored[pa].sum()
             okh = (far <= target_far).nonzero()
             h = float(hs[okh[0, 0]]) if len(okh) else float(hs[-1])
             xb = (S_clean[pb] - m0) / s0
-            ab, _ = cusum(xb, clean.scored[pb], clean.reset[pb], k, h)
+            ab, _ = cusum(xb, clean.scored[pb], clean.reset[pb], k, h, sp_clean[pb] > thr)
             far_b = float((ab & ~clean.prefall[pb]).sum() / clean.scored[pb].sum())
-            # events
             pe = events.policy_id == pi
             xe = (S_ev[pe] - m0) / s0
-            ae, _ = cusum(xe, events.scored[pe], events.reset[pe], k, h)
+            ae, _ = cusum(xe, events.scored[pe], events.reset[pe], k, h, sp_ev[pe] > thr)
             det = {}
             for eid, ename in enumerate(ev_names):
                 sel = (ev_type[pe] == eid) & ~reset_before[pe]
-                win = ae[sel][:, E + 1 : E + 51]
-                hit = win.any(1)
-                first = win.float().argmax(1) + 1
+                win = ae[sel][:, E + 1 : E + 151]
+                first = torch.where(win.any(1), win.float().argmax(1) + 1, torch.full_like(win[:, 0], 10**6, dtype=torch.long))
                 post = xe[sel][:, E + 51 : E + 151]
                 post_scored = events.scored[pe][sel][:, E + 51 : E + 151]
-                det[ename] = {"envs": int(sel.sum()), "detect_1s": float(hit.float().mean()),
-                              "median_delay_steps": float(first[hit].float().median()) if hit.any() else float("nan"),
+                hit1 = first <= 50
+                det[ename] = {"envs": int(sel.sum()),
+                              "detect_1s": float(hit1.float().mean()),
+                              "detect_2s": float((first <= 100).float().mean()),
+                              "detect_3s": float((first <= 150).float().mean()),
+                              "median_delay_steps": float(first[first <= 150].float().median()) if (first <= 150).any() else float("nan"),
                               "x_mean_1_3s_after": float(post[post_scored].mean()) if post_scored.any() else float("nan"),
-                              "alarms_per_s_1_3s_after": float(ae[sel][:, E + 51 : E + 151].float().sum() / max(1, sel.sum()) / 2.0)}
-            row["per_policy"][pname] = {"m0": m0, "s0": s0, "h": h, "far_calib": float(far[okh[0, 0]]) if len(okh) else float(far[-1]),
+                              "alarms_per_s_1_3s_after": float(ae[sel][:, E + 51 : E + 151].float().sum() / max(1, int(sel.sum())) / 2.0)}
+            row["per_policy"][pname] = {"m0": m0, "s0": s0, "k": k, "h": h, "spike_z": thr,
+                                        "far_calib": float(far[okh[0, 0]]) if len(okh) else float(far[-1]),
                                         "far_verify": far_b, "events": det}
             if pits is not None:
                 pp = pits.policy_id == pi
                 S_p = pits.raw(w, clip, stat)[pp]
-                ap_, _ = cusum((S_p - m0) / s0, pits.scored[pp], pits.reset[pp], k, h)
+                ap_, _ = cusum((S_p - m0) / s0, pits.scored[pp], pits.reset[pp], k, h, sp_pits[pp] > thr)
                 dec = torch.from_numpy(pits_data.deceived).to(dev)[pp]  # [n, T]: scan fake at this frame
                 after = torch.zeros_like(dec)
                 after[:, E + 1 :] = True
@@ -299,15 +324,15 @@ def calibrate(clean: Scorer, events: Scorer, ev_data: WMData, pits: Scorer | Non
                     res[tag] = {"alarms_per_s": float(ap_[mm].float().sum() / max(1, int(mm.sum())) * 50.0),
                                 "scored_s": float(mm.sum() / 50.0)}
                 row["per_policy"][pname]["pits"] = res
-        key = [row["per_policy"][p]["events"][e]["detect_1s"] for p in policies for e in KEY_EVENTS if e in ev_names]
+        key = [row["per_policy"][p]["events"][e]["detect_2s"] for p in policies for e in KEY_EVENTS if e in ev_names]
         row["key_detect_mean"] = float(np.mean(key))
         row["far_verify_max"] = max(row["per_policy"][p]["far_verify"] for p in policies)
         rows.append(row)
-        print(f"[eval] {stat:4s} {wname:5s} clip {clip:4.0f} k {k:4.2f}: key detection {row['key_detect_mean']:.3f}  "
-              f"FAR verify {row['far_verify_max'] * 30000:.2f} per 30k steps", flush=True)
+        print(f"[eval] {stat:4s} {wname:6s} clip {clip:4.0f} k {k:4.2f}: key detection (2 s) {row['key_detect_mean']:.3f}  "
+              f"FAR verify {row['far_verify_max'] / target_far:.2f} x target", flush=True)
     feasible = [r for r in rows if r["far_verify_max"] <= 2 * target_far] or rows
     best = max(feasible, key=lambda r: (r["key_detect_mean"], -r["far_verify_max"]))
-    return {"grid": rows, "best": best}
+    return {"grid": rows, "best": best, "spike_thresholds": spike_thr}
 
 
 # --- plots ------------------------------------------------------------------------------------------------
@@ -354,7 +379,10 @@ def plots(out: Path, results: dict, traces: dict):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--run", required=True, help="logs/wm/<run> (uses model.pt)")
+    p.add_argument("--run", required=True, help="logs/wm/<run>")
+    p.add_argument("--checkpoint", default="model.pt", help="model.pt, or model_fall.pt after refit_fall")
+    p.add_argument("--dyn_split", default=None, help="split for the dynamics val metrics (default: the model's training split)")
+    p.add_argument("--fall_split", default=None, help="split for the fall val metrics (default: <data>/<prefix>train)")
     p.add_argument("--data", default="logs/wm_data", help="dir with w4_train, w4_clean, w4_events, w4_events_pits")
     p.add_argument("--prefix", default="w4_")
     p.add_argument("--out", required=True)
@@ -368,22 +396,35 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     data = Path(args.data)
-    model, ckpt = load_model(Path(args.run) / "model.pt", args.device)
+    model, ckpt = load_model(Path(args.run) / args.checkpoint, args.device)
     S = model.state_dim
     var_floor = (args.var_floor_frac * model.out_std[:S]) ** 2
     lay_pol = load_interface()["world_model"]["policies"]
-    results = {"run": args.run, "checkpoint_iter": ckpt["iter"], "val_at_checkpoint": ckpt["val"],
+    results = {"run": args.run, "checkpoint": args.checkpoint, "train_data": ckpt["data"], "fall_refit": ckpt.get("fall_refit"),
+               "checkpoint_iter": ckpt["iter"], "val_at_checkpoint": ckpt["val"],
                "warmup": args.warmup, "var_floor_frac": args.var_floor_frac, "target_arl_steps": args.target_arl}
 
-    # 1-3 on the held-out train envs and on the clean split
-    tr_meta = json.loads((data / f"{args.prefix}train" / "meta.json").read_text())
-    va = WMData(data / f"{args.prefix}train", device=args.device, envs=val_envs(tr_meta["num_envs"]), extra=True)
-    Pv = predict_split(model, va)
-    results["one_step_val"] = one_step_breakdown(va, Pv, va.train_ok, model)
-    results["multi_step"] = multi_step(model, va)
-    results["fall_val"] = fall_eval(va, Pv)
-    print("[eval] val done:", json.dumps({k: results["one_step_val"]["all"]["all"][k] for k in ("z_std", "cov_1sigma", "cov_2sigma")}), flush=True)
-    del va, Pv
+    # 1-3 on held-out envs of the dynamics training split and of the fall split, and on the clean split
+    dyn_split = Path(args.dyn_split or ckpt["data"])
+    fall_split = Path(args.fall_split or data / f"{args.prefix}train")
+    results["dyn_split"], results["fall_split"] = str(dyn_split), str(fall_split)
+    for split, tag in ((dyn_split, "dyn"), (fall_split, "fall")):
+        if tag == "fall" and split.resolve() == dyn_split.resolve():
+            results["fall_val"] = results.pop("_fall_dyn")
+            continue
+        n_envs = json.loads((split / "meta.json").read_text())["num_envs"]
+        va = WMData(split, device=args.device, envs=val_envs(n_envs), extra=True)
+        Pv = predict_split(model, va)
+        if tag == "dyn":
+            results["one_step_val"] = one_step_breakdown(va, Pv, va.train_ok, model)
+            results["multi_step"] = multi_step(model, va)
+            results["_fall_dyn"] = fall_eval(va, Pv)
+            print("[eval] val done:", json.dumps({k: results["one_step_val"]["all"]["all"][k] for k in ("z_std", "cov_1sigma", "cov_2sigma")}), flush=True)
+        else:
+            results.pop("_fall_dyn", None)
+            results["fall_val"] = fall_eval(va, Pv)
+            results["one_step_fall_split"] = one_step_breakdown(va, Pv, va.train_ok, model)
+        del va, Pv
 
     clean = WMData(data / f"{args.prefix}clean", device=args.device, extra=True)
     Pc = predict_split(model, clean)
@@ -409,7 +450,7 @@ def main():
         del Pp
         pits.scan = pits.frames = None
 
-    grid = {"stat": ["norm", "nll"], "weights": ["all", "group", "base"], "clip": [9.0, 25.0], "k": [0.25, 0.5, 1.0]}
+    grid = {"stat": ["norm", "nll"], "weights": ["all", "group", "base", "joints"], "clip": [9.0, 25.0], "k": [0.1, 0.25, 0.5, 1.0]}
     cal = calibrate(sc_clean, sc_ev, ev, sc_pits, pits, 1.0 / args.target_arl, lay_pol, ev.meta["event_step"], grid)
     results["surprisal"] = cal
     best = cal["best"]
@@ -446,9 +487,9 @@ def main():
         "z_bias": [0.0] * S,
         "z_scale": [1.0] * S,
         "warmup_steps": args.warmup,
-        "cusum": {p: {"m0": best["per_policy"][p]["m0"], "s0": best["per_policy"][p]["s0"],
-                      "k": best["k"], "h": best["per_policy"][p]["h"]} for p in lay_pol},
+        "spike_dims": list(SPIKE_DIMS),
         "target_arl_steps": args.target_arl,
+        "per_policy": {p: {k_: float(best["per_policy"][p][k_]) for k_ in ("m0", "s0", "k", "h", "spike_z")} for p in lay_pol},
     }}
     (out / "calibration.yaml").write_text(yaml.safe_dump(snippet, sort_keys=False, width=200, default_flow_style=None))
     (out / "results.json").write_text(json.dumps(results, indent=1, default=float))

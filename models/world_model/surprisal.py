@@ -6,7 +6,8 @@ At step u the observed state s_u is scored against the prediction made at step u
     norm: S = sum_d w_d * 0.5 * (min(z_d^2, clip) - 1)            (mean ~0 for a calibrated model)
     nll:  S = sum_d w_d * 0.5 * (min(z_d^2, clip) + log(2 pi (var_d + var_floor_d)))
     x = (S - m0) / s0                                               (per policy, from clean data)
-    g = max(0, g + x - k);  alarm when g > h, then g = 0
+    g = max(0, g + x - k);  alarm when g > h, then g = 0                 (persistent changes: ice)
+    spike: alarm when max_{d in spike_dims} |z_d| > spike_z, then g = 0  (impulses: pushes)
 g is reset to 0 at every episode start and nothing is scored while episode_step < warmup_steps.
 """
 
@@ -20,6 +21,8 @@ import torch
 from isaac.interface import load_interface
 
 BASE_TERMS = ("base_lin_vel", "base_ang_vel", "projected_gravity")
+JOINT_TERMS = ("joint_pos", "joint_vel")
+SPIKE_DIMS = (0, 1)  # base_lin_vel x, y: a push changes them instantly, contacts barely do
 
 
 def state_term_slices(itf: dict | None = None) -> list[tuple[str, slice]]:
@@ -34,15 +37,16 @@ def state_term_slices(itf: dict | None = None) -> list[tuple[str, slice]]:
 
 def weights(scheme: str, itf: dict | None = None) -> np.ndarray:
     """Per-dim weights over the state, summing to 1.
-    all: every dim equal; group: every state term equal (split over its dims); base: base terms only, group-balanced."""
+    all: every dim equal; group: every state term equal (split over its dims); base / joints: only those terms,
+    group-balanced."""
     terms = state_term_slices(itf)
     S = terms[-1][1].stop
     w = np.zeros(S)
     if scheme == "all":
         w[:] = 1.0
-    elif scheme in ("group", "base"):
+    elif scheme in ("group", "base", "joints"):
         for name, sl in terms:
-            if scheme == "group" or name in BASE_TERMS:
+            if scheme == "group" or (scheme == "base" and name in BASE_TERMS) or (scheme == "joints" and name in JOINT_TERMS):
                 w[sl] = 1.0 / (sl.stop - sl.start)
     else:
         raise ValueError(scheme)
@@ -65,9 +69,14 @@ def score(z: torch.Tensor, var: torch.Tensor, var_floor: torch.Tensor, w: torch.
     return (per * w).sum(-1)
 
 
-def cusum(x: torch.Tensor, scored: torch.Tensor, reset: torch.Tensor, k: float, h: float):
+def spike_stat(z: torch.Tensor) -> torch.Tensor:
+    return z[..., list(SPIKE_DIMS)].abs().amax(-1)
+
+
+def cusum(x: torch.Tensor, scored: torch.Tensor, reset: torch.Tensor, k: float, h: float, spike: torch.Tensor | None = None):
     """CUSUM along time, vectorized over envs. x, scored, reset: [N, T] (x: standardized score; scored: count
-    this step; reset: episode start). Returns alarm [N, T] bool and g [N, T] (after the alarm reset)."""
+    this step; reset: episode start); spike [N, T]: impulse alarms (also reset g). Returns alarm [N, T] bool
+    and g [N, T] (after the alarm reset)."""
     N, T = x.shape
     g = torch.zeros(N, dtype=x.dtype, device=x.device)
     alarm = torch.zeros(N, T, dtype=torch.bool, device=x.device)
@@ -77,6 +86,8 @@ def cusum(x: torch.Tensor, scored: torch.Tensor, reset: torch.Tensor, k: float, 
         g = torch.where(reset[:, u], torch.zeros_like(g), g)
         g = torch.where(scored[:, u], torch.clamp(g + xs[:, u] - k, min=0.0), g)
         a = g > h
+        if spike is not None:
+            a = a | (spike[:, u] & scored[:, u])
         alarm[:, u] = a
         g = torch.where(a, torch.zeros_like(g), g)
         gs[:, u] = g
@@ -84,7 +95,7 @@ def cusum(x: torch.Tensor, scored: torch.Tensor, reset: torch.Tensor, k: float, 
 
 
 def cusum_alarm_counts(x: torch.Tensor, scored: torch.Tensor, reset: torch.Tensor, k: float, hs: torch.Tensor,
-                       excluded: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                       excluded: torch.Tensor, spike: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
     """Alarm counts for many thresholds hs [M] in one pass: (alarms outside `excluded`, alarms inside) [M] each.
     `excluded` [N, T] marks steps whose alarms are not false alarms (e.g. within h steps before a fall)."""
     N, T = x.shape
@@ -97,21 +108,24 @@ def cusum_alarm_counts(x: torch.Tensor, scored: torch.Tensor, reset: torch.Tenso
         g = torch.where(reset[:, u][None], torch.zeros_like(g), g)
         g = torch.where(scored[:, u][None], torch.clamp(g + xs[:, u][None] - k, min=0.0), g)
         a = g > h
+        if spike is not None:
+            a = a | (spike[:, u] & scored[:, u])[None]
         n_false += (a & ~excluded[:, u][None]).sum(1)
         n_excl += (a & excluded[:, u][None]).sum(1)
         g = torch.where(a, torch.zeros_like(g), g)
     return n_false, n_excl
 
 
-def cusum_seq(x: np.ndarray, scored: np.ndarray, reset: np.ndarray, k: float, h: float):
-    """Plain single-sequence CUSUM (what Unity runs), for the reference file: x, scored, reset [T]."""
+def cusum_seq(x: np.ndarray, scored: np.ndarray, reset: np.ndarray, k: float, h: float, spike: np.ndarray | None = None):
+    """Plain single-sequence CUSUM (what Unity runs), for the reference file: x, scored, reset, spike [T]."""
     g, out_g, out_a = 0.0, [], []
-    for xu, su, ru in zip(x, scored, reset):
+    spike = np.zeros(len(x), bool) if spike is None else spike
+    for xu, su, ru, sp in zip(x, scored, reset, spike):
         if ru:
             g = 0.0
         if su:
             g = max(0.0, g + float(xu) - k)
-        a = g > h
+        a = bool(su and (g > h or sp))
         if a:
             g = 0.0
         out_g.append(g)

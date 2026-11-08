@@ -7,6 +7,7 @@ deception) are scheduled by this script and flagged per step, so the dataset can
 Splits:
   train        full v2 randomization: foot mu 0.05-1.25 changing every 4-8 s (half single-foot), pushes of
                0-1.0 m/s in a random direction every 5-10 s, full terrain mix, difficulty 0-1
+  train_nominal  "normal physics" only: as clean, plus action noise on every 4th env (surprisal model)
   clean        mu fixed per episode in [0.6, 1.25], no pushes, no noise; same terrain   (threshold calibration)
   events       clean conditions, difficulty 0-0.5; at --event_step every env gets one event (EVENTS[i % 7])
   events_pits  pit terrain only, pits 15-30 cm; from --event_step the height scan reports flat ground in
@@ -35,6 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 SPLITS = {
     "train": dict(num_envs=4096, steps=1500, seed=100),
+    "train_nominal": dict(num_envs=4096, steps=1500, seed=500),
     "clean": dict(num_envs=2048, steps=1500, seed=200),
     "events": dict(num_envs=4096, steps=600, seed=300),
     "events_pits": dict(num_envs=2048, steps=600, seed=400),
@@ -51,7 +53,7 @@ parser.add_argument("--num_envs", type=int, default=None)
 parser.add_argument("--steps", type=int, default=None, help="policy steps to record (50 Hz)")
 parser.add_argument("--seed", type=int, default=None)
 parser.add_argument("--event_step", type=int, default=200, help="events / events_pits: step of the event")
-parser.add_argument("--action_noise", type=float, default=0.1, help="train split: noise std on every 4th env")
+parser.add_argument("--action_noise", type=float, default=0.1, help="train splits: noise std on every 4th env")
 parser.add_argument("--check_envs", type=int, default=8, help="also record obs['proprio_history'] for the first N envs")
 parser.add_argument("--out_dir", default=None, help="default: logs/wm_data/<split>_<time>")
 args_cli, _ = parser.parse_known_args()
@@ -165,7 +167,7 @@ def main():
     masks = {p: torch.tensor([o == p for o in owner], device=device) for p in nets}
     policy_id = np.array([POLICY_IDS[o] for o in owner], dtype=np.int8)
     noise_std = torch.zeros(N, device=device)
-    if args_cli.split == "train":
+    if args_cli.split in ("train", "train_nominal"):
         noise_std[env_idx % 4 == 0] = args_cli.action_noise
     event_type = (env_idx % len(EVENTS)) if args_cli.split == "events" else torch.zeros(N, dtype=torch.long, device=device)
 
@@ -221,7 +223,7 @@ def main():
         "policy_pattern": POLICY_PATTERN,
         "policy_ids": POLICY_IDS,
         "checkpoints": {"v2": args_cli.v2, "v1": args_cli.v1},
-        "action_noise": args_cli.action_noise if args_cli.split == "train" else 0.0,
+        "action_noise": args_cli.action_noise if args_cli.split in ("train", "train_nominal") else 0.0,
         "git": git_hash(),
         "terrain": {
             "num_rows": gen.num_rows,

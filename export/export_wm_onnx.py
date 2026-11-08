@@ -8,7 +8,7 @@ world_model.outputs. Moment matching happens in Delta space (two-pass variance) 
   ~/miniforge3/envs/env_isaaclab/bin/python export/export_wm_onnx.py --run logs/wm/<run>
       -> export/models/go2_wm.onnx
   ... --reference experiments/w3_reference/go2_v2.npz [...]
-      -> experiments/w3_reference/go2_wm_<name>.json: wm_in, all outputs, z, S, x, g, alarm per step
+      -> experiments/w3_reference/go2_wm_<name>.json: wm_in, all outputs, z, S, x, spike, g, alarm per step
 """
 
 from __future__ import annotations
@@ -86,9 +86,9 @@ class WMOnnx(nn.Module):
         return state_mean, var[:, : self.S], mbar[:, self.S :], var[:, self.S :], torch.stack(falls).mean(0), disagreement
 
 
-def export(run: str | Path, out: str | Path | None = None, opset: int = 18) -> Path:
+def export(run: str | Path, out: str | Path | None = None, opset: int = 18, checkpoint: str = "model.pt") -> Path:
     run = Path(run)
-    model, ckpt = load_model(run / "model.pt", "cpu")
+    model, ckpt = load_model(run / checkpoint, "cpu")
     layout = load_layout()
     if model.dyn_dim != layout.dyn_dim:
         raise ValueError(f"model input {model.dyn_dim} != yaml {layout.dyn_dim}")
@@ -103,6 +103,7 @@ def export(run: str | Path, out: str | Path | None = None, opset: int = 18) -> P
     meta = {
         "kind": "world_model",
         "run": os.path.relpath(run, REPO_ROOT),
+        "checkpoint": checkpoint,
         "iter": str(ckpt["iter"]),
         "members": str(model.E),
         "input_dim": str(layout.input_dim),
@@ -142,7 +143,7 @@ def build_wm_input(ref: dict, itf: dict, policy: str) -> np.ndarray:
 
 
 def surprisal_trace(state: np.ndarray, outputs: dict, itf: dict, policy: str, episode_step: np.ndarray) -> dict:
-    """Per-step z, S, x, g, alarm following world_model.surprisal (frame u scored against prediction u-1)."""
+    """Per-step z, S, x, spike, g, alarm following world_model.surprisal (frame u scored against prediction u-1)."""
     from models.world_model.surprisal import cusum_seq
 
     sp = itf["world_model"]["surprisal"]
@@ -160,12 +161,14 @@ def surprisal_trace(state: np.ndarray, outputs: dict, itf: dict, policy: str, ep
         var[1:] = outputs["state_var"][:-1]
         per = 0.5 * (z2 + np.log(2 * np.pi * (var + floor)))
     S[1:] = (per[1:] * w).sum(1)
-    cs = sp["cusum"][policy]
-    x = (S - cs["m0"]) / cs["s0"]
+    pp = sp["per_policy"][policy]
+    x = (S - pp["m0"]) / pp["s0"]
     scored = (np.arange(n) >= 1) & (episode_step >= sp["warmup_steps"])
     reset = episode_step == 0
-    g, alarm = cusum_seq(x, scored, reset, cs["k"], cs["h"])
-    return {"z": z, "S": S, "x": x, "scored": scored, "g": g, "alarm": alarm}
+    spike = np.zeros(n, bool)
+    spike[1:] = np.abs(z[1:, sp["spike_dims"]]).max(1) > pp["spike_z"]
+    g, alarm = cusum_seq(x, scored, reset, pp["k"], pp["h"], spike)
+    return {"z": z, "S": S, "x": x, "scored": scored, "spike": spike & scored, "g": g, "alarm": alarm}
 
 
 def write_reference(onnx_path: Path, npz: Path, out: Path, policy: str = "v2") -> dict:
@@ -206,13 +209,14 @@ def write_reference(onnx_path: Path, npz: Path, out: Path, policy: str = "v2") -
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--run", default=None, help="logs/wm/<run>; omit to only write references for the existing model")
+    p.add_argument("--checkpoint", default="model.pt", help="model.pt, or model_fall.pt after refit_fall")
     p.add_argument("--out", default=None, help="default export/models/go2_wm.onnx")
     p.add_argument("--opset", type=int, default=18)
     p.add_argument("--reference", nargs="*", default=[], help="reference .npz rollouts to trace (policy v2)")
     args = p.parse_args()
     path = Path(args.out) if args.out else MODELS_DIR / "go2_wm.onnx"
     if args.run:
-        path = export(args.run, path, args.opset)
+        path = export(args.run, path, args.opset, args.checkpoint)
         print(f"[INFO] exported {path} ({path.stat().st_size / 2**20:.1f} MB)")
     for npz in args.reference:
         npz = Path(npz)

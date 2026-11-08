@@ -48,9 +48,13 @@ def session():
 @pytest.fixture(scope="module")
 def run_dir(session):
     run = REPO_ROOT / session.get_modelmeta().custom_metadata_map["run"]
-    if not (run / "model.pt").exists():
+    if not (run / ckpt_name(session)).exists():
         pytest.skip(f"missing training run {run}")
     return run
+
+
+def ckpt_name(session) -> str:
+    return session.get_modelmeta().custom_metadata_map.get("checkpoint", "model.pt")
 
 
 def run_onnx(session, wm_in: np.ndarray) -> dict[str, np.ndarray]:
@@ -103,7 +107,7 @@ def test_wm_io_contract(session, itf):
 
 
 def test_wm_torch_vs_onnx(run_dir, session, ref_v2, itf):
-    model, _ = load_model(run_dir / "model.pt", "cpu")
+    model, _ = load_model(run_dir / ckpt_name(session), "cpu")
     lay = load_layout(itf)
     rng = np.random.default_rng(0)
     x_ref = build_wm_input(ref_v2, itf, "v2")
@@ -131,7 +135,7 @@ def test_wm_torch_vs_onnx(run_dir, session, ref_v2, itf):
 
 
 def test_wm_tracked_onnx_is_this_run(run_dir, session, ref_v2, itf, tmp_path):
-    fresh = ort.InferenceSession(str(export(run_dir, tmp_path / "wm.onnx")), providers=["CPUExecutionProvider"])
+    fresh = ort.InferenceSession(str(export(run_dir, tmp_path / "wm.onnx", checkpoint=ckpt_name(session))), providers=["CPUExecutionProvider"])
     x = build_wm_input(ref_v2, itf, "v2")[::10]
     a, b = run_onnx(session, x), run_onnx(fresh, x)
     for k in OUTPUTS:
@@ -154,7 +158,7 @@ def test_wm_reference_trace(name, session, itf):
     lay = load_layout(itf)
     tr = surprisal_trace(wm_in[:, lay.current_state_in_input], {k: unpack(doc[k]) for k in OUTPUTS}, itf, doc["policy"],
                          unpack(doc["episode_step"]))
-    for k in ("z", "S", "x", "g"):
+    for k in ("z", "S", "x", "g", "spike"):
         np.testing.assert_allclose(tr[k], unpack(doc[k]), rtol=1e-6, atol=1e-6, err_msg=k)
     assert (tr["alarm"] == unpack(doc["alarm"]).astype(bool)).all()
     if doc["friction_drop"] is None:
