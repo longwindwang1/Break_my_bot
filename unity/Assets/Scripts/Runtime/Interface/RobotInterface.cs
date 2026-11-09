@@ -28,6 +28,8 @@ namespace BMB
         public FrictionSpec Friction { get; set; }
         public CommandsSpec Commands { get; set; }
         public Dictionary<string, PolicySpec> Policies { get; set; }
+        /// <summary>Learned dynamics monitor (W4–5); see <see cref="WorldModelSpec"/>.</summary>
+        public WorldModelSpec WorldModel { get; set; }
 
         public int NumJoints => JointNames.Count;
 
