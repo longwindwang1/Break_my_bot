@@ -57,6 +57,12 @@ namespace BMB.Editor
             foreach (var path in paths)
             {
                 var variant = Path.GetFileNameWithoutExtension(path).Replace("go2_", "");
+                if (!itf.Policies.ContainsKey(variant))
+                {
+                    // go2_wm (world model) and go2_terrain_risk have their own inputs; not policies.
+                    Debug.Log($"[BMB] {path}: not a policy (no policies.{variant} in the yaml), skipped");
+                    continue;
+                }
                 try
                 {
                     using var runner = new PolicyRunner(AssetDatabase.LoadAssetAtPath<ModelAsset>(path), itf.ObsDim(variant), itf.NumJoints);
