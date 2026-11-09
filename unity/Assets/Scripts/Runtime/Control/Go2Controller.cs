@@ -39,7 +39,15 @@ namespace BMB
         [SerializeField] float fallHeight = 0.08f;
         [SerializeField] bool resetOnFall = true;
 
+        [Header("World model")]
+        [Tooltip("Run the world model (go2_wm.onnx) next to the policy: predictions, surprisal and alarms. Rough and v2 only")]
+        [SerializeField] bool worldModel;
+
         RobotInterface itf;
+        WorldModelRunner wmRunner;
+        bool ownsWm;
+        SurprisalParams wmSurprisal;
+        WorldModelMonitor monitor;
         PolicyRunner policy;
         bool ownsPolicy;
         ObservationBuilder builder;
@@ -81,6 +89,11 @@ namespace BMB
         public HeightScanner Scanner => scanner;
         /// <summary>Per-foot friction (ground μ under each foot, effective μ).</summary>
         public FootFrictionDriver FootFriction => footDriver;
+        /// <summary>The world-model monitor (null unless enabled for a rough / v2 policy).</summary>
+        public WorldModelMonitor WorldModel => monitor;
+        internal ObservationBuilder Builder => builder;
+        internal PolicyRunner Policy => policy;
+        internal WorldModelRunner WorldModelRunner => wmRunner;
 
         /// <summary>Ground friction map read per foot (null = uniform μ 1.0 ground).</summary>
         public FrictionZones Zones
@@ -142,6 +155,35 @@ namespace BMB
             kdScale = dampingScale;
         }
 
+        /// <summary>
+        /// Runs the world model next to the policy (rough / v2). Before Initialize it only sets what Initialize will
+        /// create; after it, the monitor starts at the next episode step.
+        /// </summary>
+        /// <param name="sharedRunner">Optional runner shared by several robots (not disposed here).</param>
+        /// <param name="surprisal">Thresholds; null = Unity calibration if present, else the yaml's.</param>
+        public void EnableWorldModel(WorldModelRunner sharedRunner = null, SurprisalParams surprisal = null)
+        {
+            worldModel = true;
+            if (sharedRunner != null)
+                wmRunner = sharedRunner;
+            wmSurprisal = surprisal;
+            if (builder != null && monitor == null)
+                CreateMonitor();
+        }
+
+        void CreateMonitor()
+        {
+            if (WorldModelSpec.PolicyName(variant) == null)
+            {
+                Debug.LogWarning($"[BMB] {name}: no world model for the {variant} policy");
+                return;
+            }
+            ownsWm = wmRunner == null;
+            if (ownsWm)
+                wmRunner = WorldModelRunner.Load(itf);
+            monitor = new WorldModelMonitor(itf, variant, wmRunner, wmSurprisal);
+        }
+
         /// <summary>Where the robot returns on reset (Unity frame; y is recomputed from the terrain).</summary>
         public void SetSpawn(Vector3 position, float yawDeg)
         {
@@ -172,6 +214,8 @@ namespace BMB
                 scan = new float[scanner.Count];
             }
             footDriver = new FootFrictionDriver(body, itf, footFriction) { Zones = frictionZones };
+            if (worldModel)
+                CreateMonitor();
 
             var n = itf.NumJoints;
             obs = new float[builder.Dim];
@@ -196,7 +240,11 @@ namespace BMB
         {
             if (ownsPolicy)
                 policy?.Dispose();
+            if (ownsWm)
+                wmRunner?.Dispose();
             policy = null;
+            wmRunner = null;
+            monitor = null;
             builder = null;
         }
 
@@ -208,6 +256,7 @@ namespace BMB
             Array.Clear(actions, 0, actions.Length);
             Array.Copy(itf.DefaultJointPos, qTarget, qTarget.Length);
             builder.Reset();
+            monitor?.Reset();
             physicsStep = 0;
             trialStart = spawnPosition;
             trialHeading = spawnRotation;
@@ -253,6 +302,7 @@ namespace BMB
             for (var i = 0; i < actions.Length; i++)
                 qTarget[i] = itf.DefaultJointPos[i] + itf.Action.Scale * actions[i];
             Array.Copy(actions, lastAction, actions.Length);
+            monitor?.Step(obs, actions, physicsStep / itf.Timing.Decimation);
 
             heightSum += BaseHeight;
             heightSamples++;

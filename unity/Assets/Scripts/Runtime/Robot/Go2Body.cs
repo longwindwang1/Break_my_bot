@@ -22,6 +22,8 @@ namespace BMB
         public ArticulationBody Root => rootBody;
         public int NumJoints => joints.Length;
         public string JointName(int i) => jointNames[i];
+        /// <summary>The articulation body of policy joint i (its revolute joint connects it to its parent).</summary>
+        public ArticulationBody Joint(int i) => joints[i];
 
         /// <summary>Editor setup only.</summary>
         public void Configure(ArticulationBody root, ArticulationBody[] policyJoints, string[] names, float[] velocityLimits)

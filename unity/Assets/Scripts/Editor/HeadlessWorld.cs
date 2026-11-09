@@ -69,8 +69,11 @@ namespace BMB.Editor
         /// A Go2 with its controller, spawned at <paramref name="position"/> (x, z; y from the terrain + init height)
         /// facing <paramref name="yawDeg"/> (Unity yaw). Initialized and ready to step.
         /// </summary>
+        /// <param name="worldModel">Run the world-model monitor (rough / v2); <paramref name="sharedWorldModel"/> optional.</param>
+        /// <param name="surprisal">World-model thresholds; null = Unity calibration if present, else the yaml's.</param>
         public Go2Controller AddRobot(string variant, Vector3 position, float yawDeg = 0f, float footFriction = 0f,
-                                      bool resetOnFall = false, PolicyRunner sharedPolicy = null, Vector3? command = null)
+                                      bool resetOnFall = false, PolicyRunner sharedPolicy = null, Vector3? command = null,
+                                      bool worldModel = false, WorldModelRunner sharedWorldModel = null, SurprisalParams surprisal = null)
         {
             var robot = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(Go2Setup.PrefabPath), Scene);
             robot.name = $"Go2_{robots.Count}";
@@ -83,6 +86,8 @@ namespace BMB.Editor
             controller.Configure(body, variant, resetAfterFall: resetOnFall, footFrictionMu: footFriction, sharedPolicy: sharedPolicy);
             controller.ExternallyStepped = true;
             controller.CommandOverride = command ?? Vector3.zero;
+            if (worldModel || sharedWorldModel != null)
+                controller.EnableWorldModel(sharedWorldModel, surprisal);
             UnityEngine.Physics.SyncTransforms();  // objects moved after creation; the spawn raycast must see them in place
             controller.Initialize();
             robots.Add(controller);

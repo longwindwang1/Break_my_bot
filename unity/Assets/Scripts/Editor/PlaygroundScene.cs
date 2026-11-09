@@ -41,6 +41,11 @@ namespace BMB.Editor
             var manager = game.AddComponent<DisturbanceManager>();
             W3Scenes.Set(manager, ("controller", parts.Controller), ("limits", Limits()), ("viewCamera", parts.Camera), ("frictionZones", zones), ("level", level));
 
+            // World model next to the policy, and its blue ghost a little ahead of the robot.
+            W3Scenes.Set(parts.Controller, ("worldModel", true));
+            var ghost = new GameObject("WorldModel").AddComponent<GhostView>();
+            W3Scenes.Set(ghost, ("controller", parts.Controller), ("ghostMaterial", GhostMaterial()));
+
             // Game HUD (UI Toolkit) and an EventSystem fed by the Input System.
             var ui = new GameObject("GameUI");
             var document = ui.AddComponent<UIDocument>();
@@ -91,6 +96,39 @@ namespace BMB.Editor
                 AssetDatabase.CreateAsset(material, IceMaterialPath);
             }
             material.color = new Color(0.62f, 0.88f, 1f, 0.62f);
+            EditorUtility.SetDirty(material);
+            AssetDatabase.SaveAssets();
+            return material;
+        }
+
+        public const string GhostMaterialPath = "Assets/Game/Ghost.mat";
+
+        /// <summary>URP Lit, transparent, emissive blue: the world model's ghost (GhostView tints a runtime copy).</summary>
+        public static Material GhostMaterial()
+        {
+            var material = AssetDatabase.LoadAssetAtPath<Material>(GhostMaterialPath);
+            if (material == null)
+            {
+                System.IO.Directory.CreateDirectory("Assets/Game");
+                material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+                AssetDatabase.CreateAsset(material, GhostMaterialPath);
+            }
+            // transparent surface, alpha blending, no depth write (URP Lit's own keyword set-up)
+            material.SetFloat("_Surface", 1f);
+            material.SetFloat("_Blend", 0f);
+            material.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            material.SetFloat("_DstBlend", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            material.SetFloat("_SrcBlendAlpha", (float)UnityEngine.Rendering.BlendMode.One);
+            material.SetFloat("_DstBlendAlpha", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            material.SetFloat("_ZWrite", 0f);
+            material.SetFloat("_Smoothness", 0.8f);
+            material.SetOverrideTag("RenderType", "Transparent");
+            material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            material.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+            material.SetColor("_BaseColor", new Color(GhostView.Blue.r, GhostView.Blue.g, GhostView.Blue.b, 0.42f));
+            material.EnableKeyword("_EMISSION");
+            material.SetColor("_EmissionColor", GhostView.Blue * 0.9f);
+            material.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
             EditorUtility.SetDirty(material);
             AssetDatabase.SaveAssets();
             return material;

@@ -73,6 +73,23 @@ namespace BMB
                 g.Newest = -1;
         }
 
+        /// <summary>Copies another builder's history (same variant), e.g. to continue it in an imagined rollout.</summary>
+        public void CopyFrom(ObservationBuilder other)
+        {
+            if (other.Variant != Variant)
+                throw new ArgumentException($"cannot copy a {other.Variant} builder into a {Variant} one");
+            for (var gi = 0; gi < groups.Count; gi++)
+            {
+                var (g, o) = (groups[gi], other.groups[gi]);
+                g.Newest = o.Newest;
+                for (var k = 0; k < g.Buffer.Length; k++)
+                    for (var s = 0; s < g.Buffer[k].Length; s++)
+                        Array.Copy(o.Buffer[k][s], g.Buffer[k][s], g.Buffer[k][s].Length);
+            }
+        }
+
+        float[] jointPosRel;
+
         /// <param name="state">Robot state in Unity coordinates.</param>
         /// <param name="command">(vx, vy, wz) velocity command in the Isaac base frame.</param>
         /// <param name="lastAction">Raw policy output of the previous step (zeros after a reset).</param>
@@ -80,17 +97,31 @@ namespace BMB
         /// <param name="obs">Output, length <see cref="Dim"/>.</param>
         public void Build(in RobotState state, Vector3 command, float[] lastAction, float[] heightScanRaw, float[] obs)
         {
+            jointPosRel ??= new float[defaultJointPos.Length];
+            for (var i = 0; i < jointPosRel.Length; i++)
+                jointPosRel[i] = state.JointPos[i] - defaultJointPos[i];
+            BuildFromTerms(IsaacFrame.PolarInBase(state.BaseRotation, state.BaseComLinearVelocity),
+                           IsaacFrame.AxialInBase(state.BaseRotation, state.BaseAngularVelocity),
+                           IsaacFrame.PolarInBase(state.BaseRotation, IsaacFrame.GravityDirection),
+                           command, jointPosRel, state.JointVel, lastAction, heightScanRaw, obs);
+        }
+
+        /// <summary>
+        /// Same as <see cref="Build"/> from the observation terms themselves (Isaac base frame; joint_pos relative to
+        /// the default pose), e.g. a state predicted by the world model.
+        /// </summary>
+        public void BuildFromTerms(Vector3 baseLinVel, Vector3 baseAngVel, Vector3 projectedGravity, Vector3 command,
+                                   float[] jointPosRelative, float[] jointVel, float[] lastAction, float[] heightScanRaw, float[] obs)
+        {
             if (obs.Length != Dim)
                 throw new ArgumentException($"obs has {obs.Length} slots, expected {Dim}");
 
-            Set3("base_lin_vel", IsaacFrame.PolarInBase(state.BaseRotation, state.BaseComLinearVelocity));
-            Set3("base_ang_vel", IsaacFrame.AxialInBase(state.BaseRotation, state.BaseAngularVelocity));
-            Set3("projected_gravity", IsaacFrame.PolarInBase(state.BaseRotation, IsaacFrame.GravityDirection));
+            Set3("base_lin_vel", baseLinVel);
+            Set3("base_ang_vel", baseAngVel);
+            Set3("projected_gravity", projectedGravity);
             Set3("velocity_commands", command);
-            var jointPos = terms["joint_pos"];
-            for (var i = 0; i < jointPos.Length; i++)
-                jointPos[i] = state.JointPos[i] - defaultJointPos[i];
-            Array.Copy(state.JointVel, terms["joint_vel"], terms["joint_vel"].Length);
+            Array.Copy(jointPosRelative, terms["joint_pos"], terms["joint_pos"].Length);
+            Array.Copy(jointVel, terms["joint_vel"], terms["joint_vel"].Length);
             Array.Copy(lastAction, terms["actions"], terms["actions"].Length);
             if (NeedsHeightScan)
             {
