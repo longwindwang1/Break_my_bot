@@ -90,6 +90,38 @@ def policy_obs_dim(itf: dict, variant: str) -> int:
     return sum(t["dim"] * max(1, g["history_length"]) for g in expected_obs_groups(itf, variant) for t in g["terms"])
 
 
+def obs_term_slices(itf: dict) -> dict[str, slice]:
+    """Position of every observation term in the (rough-layout) policy observation vector."""
+    out, i = {}, 0
+    for t in itf["observation"]["terms"]:
+        out[t["name"]] = slice(i, i + t["dim"])
+        i += t["dim"]
+    return out
+
+
+def wm_input_blocks(itf: dict) -> list[dict]:
+    """world_model.input with dims resolved: [{"name", "dim" (total), "history_length", "terms": [{name, dim}]}]."""
+    term_dims = {t["name"]: t["dim"] for t in itf["observation"]["terms"]}
+    blocks = []
+    for b in itf["world_model"]["input"]:
+        if "terms" in b:
+            terms = [{"name": n, "dim": term_dims[n]} for n in b["terms"]]
+            h = b["history_length"]
+            blocks.append({"name": b["name"], "history_length": h, "terms": terms, "dim": h * sum(t["dim"] for t in terms)})
+        else:
+            blocks.append({"name": b["name"], "history_length": 0, "terms": [], "dim": b["dim"]})
+    return blocks
+
+
+def wm_input_dim(itf: dict) -> int:
+    return sum(b["dim"] for b in wm_input_blocks(itf))
+
+
+def wm_state_dim(itf: dict) -> int:
+    term_dims = {t["name"]: t["dim"] for t in itf["observation"]["terms"]}
+    return sum(term_dims[n] for n in itf["world_model"]["state_terms"])
+
+
 def detect_variant(observations: dict, itf: dict) -> str:
     """Which policies.<variant> an Isaac Lab observation config (env.yaml dict or configclass) belongs to."""
     names = set(observations) if isinstance(observations, dict) else set(vars(observations))

@@ -74,6 +74,14 @@ def quat_apply_inverse(q_wxyz: np.ndarray, v: np.ndarray) -> np.ndarray:
     return v - w * t + np.cross(xyz, t)
 
 
+def history_block(x: np.ndarray, h: int) -> np.ndarray:
+    """[n, d] per-step term values -> [n, h * d]: the last h frames oldest -> newest, frames before the
+    episode start (step 0 of the rollout) replaced by the first frame."""
+    n = len(x)
+    frames = np.maximum(np.arange(n)[:, None] - np.arange(h - 1, -1, -1)[None, :], 0)  # [n, h], oldest first
+    return x[frames].reshape(n, h * x.shape[1])
+
+
 def build_obs(ref: dict, itf: dict, variant: str) -> np.ndarray:
     """Rebuild the deployed policy's input from raw physics state, following robot_interface.yaml only.
 
@@ -81,6 +89,20 @@ def build_obs(ref: dict, itf: dict, variant: str) -> np.ndarray:
     then each observation group (history groups: per term, the last H frames oldest -> newest, with frames
     before the episode start replaced by the first frame), groups concatenated in order.
     """
+    parts = obs_parts(ref, itf)
+    n = len(ref["root_link_quat_w"])
+    blocks = []
+    for group in expected_obs_groups(itf, variant):
+        h = max(1, group["history_length"])
+        for t in group["terms"]:
+            x = parts[t["name"]]
+            assert x.shape == (n, t["dim"]), t["name"]
+            blocks.append(history_block(x, h))
+    return np.concatenate(blocks, axis=1).astype(np.float32)
+
+
+def obs_parts(ref: dict, itf: dict) -> dict[str, np.ndarray]:
+    """Per-term observation values [n, dim] from the raw physics state of a reference rollout."""
     q = ref["root_link_quat_w"]
     n = len(q)
     default = np.asarray(itf["default_joint_pos"], dtype=np.float32)
@@ -99,15 +121,7 @@ def build_obs(ref: dict, itf: dict, variant: str) -> np.ndarray:
         raw = ref["scan_sensor_z"][:, None] - ref["scan_hits_z"] - hs["offset"]
         clip = next(t for t in itf["observation"]["terms"] if t["name"] == "height_scan")["clip"]
         parts["height_scan"] = np.clip(raw, *clip)
-    blocks = []
-    for group in expected_obs_groups(itf, variant):
-        h = max(1, group["history_length"])
-        frames = np.maximum(np.arange(n)[:, None] - np.arange(h - 1, -1, -1)[None, :], 0)  # [n, h], oldest first
-        for t in group["terms"]:
-            x = parts[t["name"]]
-            assert x.shape == (n, t["dim"]), t["name"]
-            blocks.append(x[frames].reshape(n, h * t["dim"]))
-    return np.concatenate(blocks, axis=1).astype(np.float32)
+    return parts
 
 
 # --- interface file vs Isaac Lab ------------------------------------------------------------------

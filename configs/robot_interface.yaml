@@ -151,3 +151,89 @@ policies:
     obs_normalization: false
     # Cautious gait after a surprisal alarm = clamp the velocity command (no separate training).
     cautious_gait: {max_lin_vel: 0.3, max_ang_vel: 0.5}
+
+world_model:
+  # Learned dynamics monitor (W4-5): ensemble of Gaussian MLPs, run once per policy step next to the policy.
+  # It never produces actions. Deployed as export/models/go2_wm.onnx: input "wm_in" [1, input_dim], outputs below.
+  policies: [v1, v2]          # order of the policy one-hot (v1 = W1 rough, v2 = deployed v2 student)
+  # Predicted state s (33-d): these observation terms (definitions in observation.terms), concatenated.
+  state_terms: [base_lin_vel, base_ang_vel, projected_gravity, joint_pos, joint_vel]
+  # wm_in = these blocks concatenated in order. All values in raw units; normalization is inside the model.
+  input:
+    - name: history
+      # The world model's OWN frame buffer (not the policy's proprio_history): the current frame + 5 previous.
+      # Flattened term by term, each term block oldest -> newest (current frame last), as in policies.v2 groups.
+      # On an episode reset every slot is filled with the first frame. It is NOT cleared on a surprisal alarm.
+      history_length: 6
+      terms: [base_lin_vel, base_ang_vel, projected_gravity, joint_pos, joint_vel, actions]
+    - {name: action, dim: 12}           # a_t: the raw policy output of this step (about to be applied)
+    - {name: height_scan, dim: 187}     # the height_scan observation term of this step (clipped)
+    - {name: policy_onehot, dim: 2}     # one-hot over `policies`; only the fall-probability head reads it
+  input_dim: 471
+  outputs:
+    state_mean: {dim: 33, def: "E[s_{t+1}] (absolute, raw units)"}
+    state_var: {dim: 33, def: "Var[s_{t+1}] = mean member variance + variance of the member means"}
+    disp_mean: {dim: 4, def: "base (dx, dy, dz, dyaw) from t to t+1, root link, in the yaw-only frame at t (m, rad)"}
+    disp_var: {dim: 4, def: "variance of disp, as state_var"}
+    fall_prob: {dim: 3, def: "P(the episode ends with a base contact within the next h steps), h = fall_horizons_steps"}
+    disagreement: {dim: 1, def: "mean over state dims of (variance of member means) / delta_std^2 (epistemic)"}
+  fall_horizons_steps: [10, 25, 50]
+  # Timing: at policy step t, after the policy produced a_t, run the model on wm_in(t). At step t+1, score the
+  # observed s_{t+1} against that prediction (world_model.surprisal).
+  # Surprisal + change detection (W5). Calibrated by models/world_model/evaluate.py (experiments/w5_surprisal/):
+  # false alarms <= 1 per target_arl_steps scored steps of clean walking in Isaac Lab, budget split between the
+  # CUSUM and the spike detector. Per state dim d (state_terms order), at step t+1 against the prediction from t:
+  #   z_d = ((s_d - state_mean_d) / sqrt(state_var_d + var_floor_d) - z_bias_d) / z_scale_d
+  #   S   = sum_d weights_d * 0.5 * (min(z_d^2, clip_z2) - 1)          (statistic "norm"; "nll" would add
+  #         log(2 pi (state_var_d + var_floor_d)) instead of -1)
+  #   x   = (S - m0) / s0;  g = max(0, g + x - k)                       (per_policy.<policy>)
+  #   spike = max over spike_dims of |z_d| > spike_z
+  #   alarm if g > h or spike; then g = 0.  g = 0 on every episode reset; nothing is scored while the
+  #   episode step < warmup_steps.
+  # z_bias / z_scale are engine corrections (identity for Isaac Lab); Unity estimates its own on clean walking
+  # (docs/unity_handoff.md section 11.4) and keeps them outside this file.
+  surprisal:
+    statistic: norm
+    clip_z2: 25
+    weights_scheme: joints     # joint_pos and joint_vel, each term weighted 1/2, split over its dims
+    weights: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667, 0.041667]
+    var_floor: [6.30091e-06, 5.85744e-06, 1.97464e-05, 0.00287226, 0.00092293, 0.0001024, 9.08492e-07, 1.00714e-06, 1.47349e-07, 2.50338e-05, 2.59811e-05, 1.99153e-05, 1.84715e-05, 3.07591e-05, 3.27386e-05, 2.80688e-05, 2.30429e-05, 6.58827e-05, 6.55278e-05, 7.72831e-05, 8.25093e-05, 0.025843, 0.0264748, 0.0175194, 0.0170342, 0.0398326, 0.0399313, 0.0282851, 0.0248115, 0.0858406, 0.0938769, 0.0790771, 0.0853105]   # (0.1 * delta std)^2
+    z_bias: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    z_scale: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    warmup_steps: 25
+    spike_dims: [0, 1]           # base_lin_vel x, y (pushes)
+    target_arl_steps: 30000
+    per_policy:
+      v1: {m0: -0.337515, s0: 0.266011, k: 1, h: 33.3026, spike_z: 16.1252}
+      v2: {m0: -0.386372, s0: 0.2262, k: 1, h: 68.2175, spike_z: 16.3464}
+
+terrain_risk:
+  # Terrain-risk ("vision") model (W6): probability that the robot falls within h policy steps if its base is at a
+  # grid cell, facing along the grid's x axis, under a velocity command and policy. Input is only terrain height
+  # sampled by vertical ray casts (no RGB), so Isaac Lab and Unity see the same values.
+  # Deployed as export/models/go2_terrain_risk.onnx: inputs "height" [1, 1, H, W] and "cond" [1, 5], output
+  # "risk" [1, 2, H - 16, W - 16] (probabilities, horizons below). H and W are dynamic (window or whole level).
+  resolution: 0.1            # m between height samples
+  receptive_field: 17        # output cell (i, j) depends on input points i..i+16 (x), j..j+16 (y)
+  height: "terrain surface z of a vertical ray cast (world frame). Any constant offset is fine: the model is exactly invariant to it; subtract e.g. the window's centre height first for float32 precision"
+  cond: [vx, vy, wz, policy_v1, policy_v2]   # velocity command (base frame) + one-hot over world_model.policies
+  horizons_steps: [25, 50]   # risk channel 0: fall within 25 steps (0.5 s); channel 1: within 50 steps (1 s)
+  # Egocentric window: yaw-aligned grid like height_scan (x forward, y left, roll/pitch ignored), centred on the base.
+  # Point (i, j) is at (x0 + resolution * i, y0 + resolution * j) in the base yaw frame; height[0, 0, j, i]
+  # (row-major, x fastest, as height_scan ordering "xy").
+  window: {nx: 47, ny: 37, x0: -1.3, y0: -1.8}
+  # Output cell (i, j) of the window is centred at (x0 + resolution * (i + 8), y0 + resolution * (j + 8)):
+  # a 31 x 21 map over x in [-0.5, 2.5] m, y in [-1.0, 1.0] m.
+  # Proactive slowdown (experiments/w6_terrain_risk/): every update_period_s, take the max of risk channel 0 (25 steps)
+  # over the window's output cells whose centre lies within corridor.half_width of the segment from the base along the
+  # (vx, vy) command direction, 0..corridor.length m ahead (if |(vx, vy)| <= 0.1: cells within 0.4 m of the base).
+  # Use the player's original command, not the slowed one. If the max exceeds the policy's threshold, apply
+  # policies.v2.cautious_gait (|(vx, vy)| scaled down to max_lin_vel, |wz| clamped to max_ang_vel) for hold_s.
+  # The window only covers forward motion: valid for vx >= 0.3, |vy| <= 0.2, |wz| <= 0.5.
+  slowdown:
+    update_period_s: 0.2
+    hold_s: 1.0
+    corridor: {length: 1.2, half_width: 0.2}
+    # Thresholds calibrated in Isaac Lab on held-out training tiles (the risk ahead exceeds them on 20 % of frames).
+    # v1 gets null: slowing v1 down did not reduce its falls (it is clumsier at low speed).
+    threshold: {v1: null, v2: 0.00862}

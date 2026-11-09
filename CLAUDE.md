@@ -11,13 +11,35 @@ and adapt online.
 
 ## Current status
 - Phase: W4–5 (world model)       <!-- update at the start of every phase -->
-- Last milestone done: W3 smoke test, both sides. Python: `configs/robot_interface.yaml`, ONNX export, parity tests.
+- Last milestone done: W4–5 world model, Isaac side (2026-11-07).
+  - **Model.** `export/models/go2_wm.onnx`: 5-member Gaussian MLP ensemble. Its dynamics are trained on normal physics only, so
+    ice and pushes stay surprising; its fall head is refit on the full randomization.
+  - **Spec.** `world_model` in the yaml: input layout, outputs, surprisal and CUSUM parameters.
+  - **Unity traces.** `experiments/w3_reference/go2_wm*.json`.
+  - **Results** (`experiments/w5_surprisal/`), at 1 false alarm per 10 min of clean walking:
+    - pushes are detected in the same step (97–100 %);
+    - all-feet μ → 0.05 / 0.1 is detected within 2 s at 96 % / 81–90 %;
+    - single-foot ice is weak (21–48 %);
+    - fall prediction AUROC is 0.97–0.999, against 0.90–0.95 for a tilt baseline.
+  - **Ablation.** A dynamics model trained with ice in its data barely notices ice (0.5–17 %).
+  - **Open.** Unity side: world-model buffer, surprisal + CUSUM in C#, recalibration (`docs/unity_handoff.md` §11).
+    W6–8: closed-loop alarm → cautious gait (experiment 1).
+- Also done: terrain-risk ("vision") model, phase 1 (2026-11-08).
+  - **Model.** `export/models/go2_terrain_risk.onnx`, spec `terrain_risk` in the yaml. Input is ray-cast terrain height only.
+    Output is P(fall within 0.5/1 s) per cell. It is fully convolutional: the egocentric window gives a forward heat map,
+    a whole level gives a danger map.
+  - **Results** (`experiments/w6_terrain_risk/`, unseen terrain):
+    - AUROC 0.906, against 0.84 for geometric rules and 0.98 for the world-model fall head, which sees the robot's state;
+    - risk-triggered slowdown cut v2's falls per 100 m by 36–46 % for 14–24 % less speed, while random slowdown did not
+      help; v1 gets worse when slowed.
+  - **Open.** Phase 2 (visible vs hidden ice blocks); Unity side (`docs/unity_handoff.md` §12).
+- Earlier: W3 smoke test, both sides. Python: `configs/robot_interface.yaml`, ONNX export, parity tests.
   Unity (`experiments/w3_unity/`): flat, rough and v2 walk in Unity physics; verification levels 1–4 of
   `docs/unity_handoff.md` §8 pass (ONNX ≤ 2.2e-6, obs ≤ 3.6e-7, kinematics ≤ 0.006 mm); 44 EditMode tests.
-  Unity vs Isaac gait statistics in `experiments/w3_unity/trials.md` (Unity's gait period 15–18 % longer for flat/v2).
-  Robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student) done: `export/models/go2_v2.onnx` (student, 1360-d input),
-  parity tests pass; at foot μ 0.1 it survives 90 % vs 52 % for v1 (`experiments/v2_eval/`).
-  Open: pit / deceptive-scan test does not discriminate (pits too shallow); pushes not better than v1.
+  Unity vs Isaac gait statistics are in `experiments/w3_unity/trials.md` (Unity's gait period is 15–18 % longer for flat/v2).
+  Robust policy v2 (`BMB-Go2-Rough-v2`, teacher-student): `export/models/go2_v2.onnx` (student, 1360-d input).
+  At foot μ 0.1 it survives 90 % vs 52 % for v1 (`experiments/v2_eval/`).
+  Open: the pit / deceptive-scan test does not discriminate (pits too shallow); pushes are not better than v1.
 - Unity, ahead of schedule (branch `unity-game`): disturbance playground (`Playground` scene, 7 tools, neon HUD) and
   the v2_eval scenarios in Unity physics (`experiments/unity_eval/`, Experiment 3): at μ 1.0 / 0.5 and with
   pushes v2 keeps 92–97 % (Isaac 95–98 %), v1 drops to 66–78 % (Isaac 95–98 %); low friction costs both more than
@@ -40,6 +62,7 @@ Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play
 
 - **Isaac Lab**: locomotion policy (PPO), adaptation module, world model data collection
 - **PyTorch**: world model + adaptation module training
+- **Terrain-risk model** (PyTorch, `models/terrain_risk/`): fall risk ahead from ray-cast terrain height; HUD heat map + proactive slowdown
 - **Unity**: level editor, disruption controls, surprisal HUD, ghost-path preview;
   runs all three ONNX models in Unity physics (this is also our sim-to-sim transfer test)
 
@@ -47,7 +70,8 @@ Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play
 ```
 isaac/        launchers (train.py/play.py), our tasks (bmb_tasks/), training wrapper, reference recorder,
               eval_policy.py, interface.py (yaml loader, env.yaml checker, apply_to_env_cfg)
-models/       world model, adaptation module, training code (PyTorch)  [not created yet]
+models/       world_model/ (PyTorch): dataset (masks, labels), ensemble, train, surprisal + CUSUM, evaluate/calibrate;
+              terrain_risk/: height patches, fully convolutional risk net, train, evaluate
 export/       ONNX export + parity tests; deployable models in export/models/ (tracked for the Unity machine)
 unity/        Unity 6000.3.8f1 project: Assets/Scripts/{Runtime,Editor,Tests/EditMode}, Assets/Robots (URDF, Go2.prefab),
               Assets/Scenes (W3_Flat, W3_Rough, Playground), Assets/UI (HUD), Assets/Game (limits, materials)
@@ -140,8 +164,22 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
 - Play: `PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/play.py --task <...-Play[-v0]> --load_run <time>_<run> --checkpoint model_N.pt`
   (also writes Isaac Lab's own `<log_dir>/exported/policy.onnx`; the models Unity uses come from `export/export_onnx.py`)
 - TensorBoard: `~/miniforge3/envs/env_isaaclab/bin/tensorboard --logdir logs/rsl_rl`
-- Collect world model data: `TODO`
-- Train world model: `TODO`
+- Collect world model data (one split per process: train / train_nominal / clean / events / events_pits; 1-7 min each, ~12 GB):
+  `PATH=~/miniforge3/envs/env_isaaclab/bin:$PATH python isaac/collect_wm_data.py --split train_nominal --v2 <student ckpt> --v1 <v1 rough ckpt> --out_dir logs/wm_data/w4_train_nominal`
+  (exact checkpoints in `experiments/w4_wm_data/README.md`; `--num_envs 256 --steps 160 --event_step 50` for a smoke run)
+- Train world model (~37 min) and refit its fall head on the full randomization (~1 min):
+  `~/miniforge3/envs/env_isaaclab/bin/python -m models.world_model.train --data logs/wm_data/w4_train_nominal --name w4_wm_nominal`,
+  then `... -m models.world_model.refit_fall --run logs/wm/<run> --data logs/wm_data/w4_train` -> `logs/wm/<run>/model_fall.pt`
+- Evaluate + calibrate surprisal/CUSUM (~12 min): `... -m models.world_model.evaluate --run logs/wm/<run> --checkpoint model_fall.pt --data logs/wm_data --out experiments/w5_surprisal`
+  -> `results.json`, figures, `calibration.yaml` (goes into robot_interface.yaml `world_model.surprisal`)
+- Export world model + Unity traces: `... export/export_wm_onnx.py --run logs/wm/<run> --checkpoint model_fall.pt --reference experiments/w3_reference/go2_v2.npz experiments/w3_reference/go2_v2_mudrop.npz`
+  -> `export/models/go2_wm.onnx`, `experiments/w3_reference/go2_wm*.json`; tests: `... -m pytest -k wm` and `... -m pytest models`
+- Terrain-risk model:
+  - data: `collect_wm_data.py --split geo_train|geo_train2|geo_train3|geo_test` (saves `terrain_height.npy`; splits in `isaac/wm_splits.py`);
+  - train (~4 min): `... -m models.terrain_risk.train --data logs/wm_data/w6_geo_train logs/wm_data/w6_geo_train2 logs/wm_data/w6_geo_train3 --name w6_risk3`;
+  - evaluate: `... -m models.terrain_risk.evaluate --run logs/terrain_risk/<run> --train <3 dirs> --test logs/wm_data/w6_geo_test --wm_run logs/wm/<wm run> --out experiments/w6_terrain_risk`;
+  - closed-loop slowdown: `python isaac/eval_risk_slowdown.py --mode none|always|risk|random ...` (see `experiments/w6_terrain_risk/README.md`);
+  - export + Unity reference: `... export/export_risk_onnx.py --run logs/terrain_risk/<run> --reference_split logs/wm_data/w6_geo_test`.
 - Export ONNX: `~/miniforge3/envs/env_isaaclab/bin/python export/export_onnx.py --run <log_dir> --variant flat|rough|v2 [--checkpoint model_N.pt] [--opset 15]`
   → `export/models/go2_<variant>.onnx` (input `obs` [1,48|235|1360], output `actions` [1,12]; v2 exports the student;
   opset 18 default, 15 for older Unity Inference Engine versions)
@@ -179,7 +217,7 @@ Unity (Windows; editor menu or MCP `execute_menu_item`):
 ## Milestones
 - [x] W1–2 Baseline: Isaac Lab setup, Go2 PPO policy, measure VRAM/speed locally
 - [x] W3 Smoke test: flat-ground policy running in Unity, interface parity verified (also rough and v2)
-- [ ] W4–5 World model: data collection, ensemble training, surprisal + CUSUM
+- [x] W4–5 World model: data collection, ensemble training, surprisal + CUSUM (Isaac side; Unity integration pending)
 - [ ] W6–8 Game: adaptation trigger, level editor, disruptions, HUD, ghost path
 - [ ] W9–10 Results: 3 experiments, demo video, report
 

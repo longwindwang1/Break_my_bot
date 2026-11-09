@@ -2,7 +2,7 @@
 
 For the Claude Code instance working on the **Unity side** on a separate machine. Training and export
 run on a Linux machine (Isaac Lab); results reach you through this repo. Read `CLAUDE.md` too. This file
-covers what you need for Unity. Last updated 2026-11-05.
+covers what you need for Unity. Last updated 2026-11-07.
 
 Sync: `git clone https://github.com/longwindwang1/Break_my_bot.git` (branch `main`). Put the Unity project in
 `unity/`; `.gitignore` already excludes Unity's Library/Temp/Obj/Build/Logs/UserSettings. Commit Unity work
@@ -35,7 +35,9 @@ Working rules that apply to you:
 | W3 smoke test, Python side | Done. Interface yaml, ONNX export, parity tests (Isaac ↔ ONNX) all pass |
 | W3 smoke test, Unity side | Done (2026-11-07). Flat, rough and v2 walk in Unity; §8 levels 1–4 pass. Results, model notes and open questions: `experiments/w3_unity/README.md` |
 | Robust policy v2 | Trained (friction/ice, pushes, payload, hidden pits). `export/models/go2_v2.onnx` and reference `go2_v2.json` are in the repo; parity tests pass (see §9). Runs in Unity (`W3_Rough` scene) |
-| W4–5 world model, W6–8 game, W9–10 results | Later |
+| W4–5 world model | Trained and exported: `export/models/go2_wm.onnx`, spec in the yaml `world_model`, Unity reference traces `go2_wm*.json`. See §11. Needs its own buffer, surprisal + CUSUM in C#, and a Unity recalibration |
+| Terrain-risk ("vision") model, phase 1 | Trained and exported: `export/models/go2_terrain_risk.onnx`, spec in the yaml `terrain_risk`, reference windows `go2_terrain_risk.json`. See §12. Needs a ray-cast grid, the ONNX, a HUD heat map and the slowdown trigger (v2 only) |
+| W6–8 game, W9–10 results | Later |
 
 ## 3. Your task: W3 Unity smoke test
 
@@ -218,3 +220,115 @@ Specified in `configs/robot_interface.yaml` under `policies.v2`.
 - v1 rough requires the height scan. Without correct raycasts it will behave badly.
 - base_lin_vel is not directly measurable on the real robot. That's fine in simulation.
 - If anything in this file disagrees with `configs/robot_interface.yaml` or `export/test_parity.py`, those win. Tell the user so this file gets fixed.
+
+## 11. World model (W4–5, available)
+A learned dynamics monitor that runs next to the policy at 50 Hz and **never produces actions**.
+- The dynamics part is trained on **normal physics only** (foot μ 0.6–1.25, no pushes), so ice, pushes and hidden pits stay surprising.
+- The fall head was refit on the full randomization, ice and pushes included.
+- At policy step t it predicts the next state s_{t+1}, the base displacement and the fall probability.
+- At step t+1 the observed state is scored against that prediction (surprisal). A CUSUM over the scores raises an alarm on a physics change: ice, a push, or a hidden pit.
+- Spec: `configs/robot_interface.yaml` → `world_model` (input layout, outputs, surprisal and CUSUM parameters).
+- Training and evaluation notes: `experiments/w4_wm_data/`, `experiments/w4_wm_ensemble/`, `experiments/w5_surprisal/`.
+
+| Path | What |
+|---|---|
+| `export/models/go2_wm.onnx` | Input `wm_in` [1, 471]. Outputs `state_mean`, `state_var` [1, 33]; `disp_mean`, `disp_var` [1, 4]; `fall_prob` [1, 3]; `disagreement` [1, 1]. Opset 18, about 17 MB. The 5 ensemble members are unrolled into Gemm chains; it also uses Sigmoid, Mul, Exp, Softplus, ReduceMean, Gather and Concat |
+| `experiments/w3_reference/go2_wm.json` | Every step of the v2 reference rollout (`go2_v2.json`): `wm_in`, all six outputs, `z`, `S`, `x`, `scored`, `spike`, `g`, `alarm`. Clean rollout: no alarm |
+| `experiments/w3_reference/go2_wm_mudrop.json` (+ `go2_v2_mudrop.json`) | Same format; the foot friction drops to 0.05 at `friction_drop.at_step` |
+
+### 11.1 Input `wm_in` (471 = 270 + 12 + 187 + 2)
+1. **History (270).** The world model's **own** buffer of 6 frames: the current frame and the 5 before it.
+   - A frame is the 45-d proprioception: `base_lin_vel`, `base_ang_vel`, `projected_gravity`, `joint_pos`, `joint_vel`, `actions` (the previous action), with the definitions in §5.5.
+   - Flatten term by term, each term oldest → newest, exactly like the v2 `proprio_history` (§9) but with 6 frames.
+   - On an episode reset, fill all 6 slots with the first frame.
+   - **Do not clear it on a surprisal alarm.** Only the policy's adaptation history is cleared on an alarm. Clearing this buffer too would feed the model copied frames mid-stride and trigger the next alarm.
+   - Keep this buffer for v1 too (v1 has no history of its own).
+2. **Action (12).** a_t, the raw output the policy just produced for this step.
+3. **Height scan (187).** The height-scan term of this step (§5.6).
+4. **Policy one-hot (2).** `[v1, v2]`, in the order of `world_model.policies`. Only the fall head reads it.
+
+### 11.2 Per policy step
+```
+obs_t  = BuildObs(...)                 // as now
+a_t    = policy(obs_t)
+if step_in_episode > 0: score(s_t)     // s_t = first 33 dims of the current frame (state_terms)
+wm_buffer.push(frame_t)                // after a reset: fill all 6 slots
+pred   = world_model(wm_in(wm_buffer, a_t, scan_t, onehot))   // keep state_mean, state_var for the next step
+```
+Scoring s_{t+1} against the prediction from step t (`world_model.surprisal` in the yaml):
+```
+z_d = ((s_d - state_mean_d) / sqrt(state_var_d + var_floor_d) - z_bias_d) / z_scale_d
+S   = sum_d weights_d * 0.5 * (min(z_d^2, clip_z2) - 1)                       // statistic "norm"
+      (statistic "nll": 0.5 * (min(z_d^2, clip_z2) + log(2 pi (state_var_d + var_floor_d))) instead)
+x     = (S - m0) / s0                  // m0, s0, k, h, spike_z: per_policy.<policy>
+g     = max(0, g + x - k)
+spike = max over d in spike_dims of |z_d| > spike_z      // spike_dims = base_lin_vel x, y: pushes
+if g > h or spike: ALARM, g = 0
+```
+- g = 0 on every episode reset.
+- Nothing is scored while the episode step is below `warmup_steps`.
+- On an alarm (W6–8):
+  - clear the **policy's** adaptation history (§9) by filling it with the current frame;
+  - switch to the cautious gait;
+  - leave the world-model buffer alone.
+
+### 11.3 Verification (same idea as §8)
+1. **ONNX.** Feed `go2_wm.json`'s `wm_in` rows and compare all six outputs.
+   - Tolerance: `state_mean` and `disp_mean` 1e-4 absolute; the variance outputs and `disagreement` 1e-3 relative.
+2. **Input builder.** Build `wm_in` from the `go2_v2.json` reference state with your C# code. Compare with `go2_wm.json` `wm_in` (1e-5).
+3. **Surprisal and CUSUM.** From the stored states and outputs, compute `z`, `S`, `x`, `spike`, `g` and `alarm` and compare (1e-5; `spike` and `alarm` exactly).
+   - `go2_wm.json` must stay alarm-free.
+   - `go2_wm_mudrop.json` shows what the Isaac model does after the friction drop.
+4. **Closed loop in Unity**, with the recalibration below.
+
+### 11.4 Recalibration in Unity (expected to be necessary)
+- **Why.** The thresholds were set on Isaac Lab data for one false alarm per `target_arl_steps` steps (10 min) of clean walking. Unity's physics differs: W3 measured a 15–18 % longer gait period. So in Unity the residuals are larger and shaped differently per dim, and the Isaac thresholds will raise false alarms.
+- **Procedure.** Calibrate on clean walking in Unity: varied commands, flat and rough ground, μ ≥ 0.6, no pushes.
+  1. Log z_d over at least 20 min of simulated walking. Headless stepping can run faster than real time.
+  2. Set `z_bias_d` = median(z_d) and `z_scale_d` = 1.4826 · MAD(z_d).
+  3. Recompute m0 and s0 of S with the corrected z. Keep k.
+  4. Set `spike_z` to the 1 − 1/(2 · `target_arl_steps`) quantile of the spike statistic.
+  5. Choose h as the smallest value with at most 1 alarm (CUSUM or spike) per `target_arl_steps` scored steps on that log. To be credible this needs at least 2 × `target_arl_steps` scored steps.
+- **Where to store it.** Write the values to `experiments/w3_unity/wm_calibration_unity.json`, which the runtime prefers over the yaml values. Do not edit the yaml. Report the per-dim bias and scale: they are data for experiment 3.
+
+
+## 12. Terrain-risk ("vision") model (W6 phase 1, available)
+**What it predicts.** From terrain height alone, the probability that the robot falls within 0.5 s or 1 s if its base were at a given cell, facing along the grid's x axis, under the current command and policy.
+- It warns *before* the robot gets there. This complements the world model (§11), which notices a problem only after the fact.
+- "Vision" here means height from vertical ray casts, not a camera image, so Unity and Isaac see the same numbers.
+- Spec: `configs/robot_interface.yaml` → `terrain_risk`. Results: `experiments/w6_terrain_risk/README.md`.
+
+**Result in Isaac Lab (v2, unseen terrain).** Slowing down where the model sees risk ahead cut falls per 100 m by 36–46 % and cost 14–24 % of speed. Random slowdown with the same cautious time did not help. v1 gets worse when slowed, so its threshold is `null`.
+
+| Path | What |
+|---|---|
+| `export/models/go2_terrain_risk.onnx` | 113 KB. Inputs `height` [1, 1, H, W] (H, W dynamic) and `cond` [1, 5] = (vx, vy, wz, policy_v1, policy_v2). Output `risk` [1, 2, H − 16, W − 16], probabilities for 25 and 50 steps. Ops: Conv (dilations 1, 1, 2, 4, no padding), MatMul, Add, Unsqueeze, Relu, Mul, Sigmoid |
+| `experiments/w3_reference/go2_terrain_risk.json` | 8 windows cut from Isaac terrain: `height` [37][47], `cond`, `risk` [2][21][31], `corridor_mask` [21][31], `risk_ahead`, `threshold`, `slow_down` |
+
+### 12.1 Egocentric window (yaml `terrain_risk.window`)
+- 47 × 37 vertical ray casts, as for the height scan (§5.6): the origin follows the base position and yaw, roll and pitch are ignored, and rays hit the terrain only.
+- Point (i, j) sits at (x0 + 0.1·i, y0 + 0.1·j) in the base yaw frame (Isaac axes: x forward, y left), with x0 = −1.3 and y0 = −1.8. It goes into `height[0, 0, j, i]`.
+- The value is the hit z in metres. Any constant offset is fine; subtract the centre height first for float precision.
+- Output cell (i, j) is centred at (x0 + 0.1·(i + 8), y0 + 0.1·(j + 8)). The 31 × 21 output covers x ∈ [−0.5, 2.5] m and y ∈ [−1, 1] m ahead of the robot.
+- For the HUD, convert these Isaac-frame cell centres with `IsaacFrame`.
+- Cost: about 33M multiply-adds per window, a few milliseconds on CPU. Run it at the update period (0.2 s) with `Schedule`, not inside FixedUpdate.
+
+### 12.2 Slowdown trigger (yaml `terrain_risk.slowdown`)
+Every 0.2 s:
+1. Take the max of risk channel 0 over the output cells whose centres lie within 0.2 m of the segment from the base along the (vx, vy) command, from 0 to 1.2 m ahead. If |(vx, vy)| ≤ 0.1, use the cells within 0.4 m of the base instead.
+2. If that max exceeds `threshold.<policy>`, apply the cautious gait for 1 s. The cautious gait scales |(vx, vy)| down to 0.3 m/s and clamps |wz| to 0.5 (`policies.v2.cautious_gait`).
+3. Use the player's original command for the risk, never the slowed one; otherwise the trigger oscillates.
+
+The window only looks forward, so the trigger is valid for vx ≥ 0.3, |vy| ≤ 0.2 and |wz| ≤ 0.5. This rule and the surprisal alarm (§11) both lead to the cautious gait. Either can trigger it.
+
+### 12.3 Whole-level danger map
+Run the same ONNX on a larger height grid, for example the level at 0.1 m (H and W are dynamic). Output cell (i, j) is the risk of the input cell (i + 8, j + 8) for heading +x.
+- For other headings, rotate the grid. A useful summary is the max over 4–8 headings.
+- Compute it when the level loads or changes, not every frame.
+
+### 12.4 Verification
+1. **ONNX.** Feed each reference window's `height` and `cond` and compare `risk` (tolerance 1e-5).
+2. **Corridor and trigger.** From `cond[0:2]`, rebuild `corridor_mask`, then `risk_ahead` and `slow_down`. All must match exactly.
+3. **Ray grid.** In a Unity scene with known geometry (for example a single 0.15 m step), check that the ray grid lands at the documented positions and order.
+
+The thresholds were set on Isaac Lab terrain. Player-built levels and Unity's slower gait are a distribution shift, so watch how often the trigger fires in Unity. If it fires far more than about 20–45 % of walking time, report it.
