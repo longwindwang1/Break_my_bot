@@ -668,6 +668,11 @@ Button.btn .neon-icon {
     margin-top: 6px;
 }
 
+.wm-ghost Button.seg {
+    align-self: flex-start;
+    letter-spacing: 2px;
+}
+
 /* ---- drive and stick ------------------------------------------------------------------------------------------ */
 
 .drive {

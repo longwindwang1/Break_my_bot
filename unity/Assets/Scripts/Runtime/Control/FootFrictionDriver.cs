@@ -12,7 +12,7 @@ namespace BMB
     {
         readonly Go2Body body;
         readonly RobotInterface itf;
-        float baseStatic, baseDynamic;
+        readonly float[] baseStatic = new float[4], baseDynamic = new float[4];
         readonly PhysicsMaterialCombine combine;
         readonly float[] applied = { float.NaN, float.NaN, float.NaN, float.NaN };
 
@@ -20,8 +20,9 @@ namespace BMB
         /// <summary>Ground μ under each foot (FL, FR, RL, RR) at the last update.</summary>
         public float[] GroundMu { get; } = new float[4];
         /// <summary>Effective static contact friction of each foot (base × ground).</summary>
-        public float EffectiveStatic(int foot) => baseStatic * GroundMu[foot];
-        public float BaseStatic => baseStatic;
+        public float EffectiveStatic(int foot) => baseStatic[foot] * GroundMu[foot];
+        /// <summary>Static base μ of a foot (before the ground's μ multiplies in).</summary>
+        public float BaseStatic(int foot) => baseStatic[foot];
 
         /// <param name="footFriction">Static foot μ; ≤ 0 = the v1 material (friction.v1_foot).</param>
         public FootFrictionDriver(Go2Body body, RobotInterface itf, float footFriction)
@@ -33,24 +34,36 @@ namespace BMB
         }
 
         /// <summary>
-        /// Changes the foot base μ mid-run (like Isaac's randomize_foot_friction event, e.g. the eval's mu_drop);
-        /// ≤ 0 = the v1 material. Applied at once.
+        /// Changes the base μ of every foot mid-run (like Isaac's randomize_foot_friction event, e.g. the eval's
+        /// mu_drop); ≤ 0 = the v1 material. Applied at once.
         /// </summary>
         public void SetFootMu(float footFriction)
         {
+            for (var i = 0; i < baseStatic.Length; i++)
+                Set(i, footFriction);
+            Update();
+        }
+
+        /// <summary>One foot only (FL, FR, RL, RR = 0..3), e.g. a single icy foot.</summary>
+        public void SetFootMu(int foot, float footFriction)
+        {
+            Set(foot, footFriction);
+            Update();
+        }
+
+        void Set(int i, float footFriction)
+        {
             if (footFriction > 0f)
             {
-                baseStatic = footFriction;
-                baseDynamic = footFriction * itf.Friction.FootDynamicRatio;
+                baseStatic[i] = footFriction;
+                baseDynamic[i] = footFriction * itf.Friction.FootDynamicRatio;
             }
             else
             {
-                baseStatic = itf.Friction.V1Foot[0];
-                baseDynamic = itf.Friction.V1Foot[1];
+                baseStatic[i] = itf.Friction.V1Foot[0];
+                baseDynamic[i] = itf.Friction.V1Foot[1];
             }
-            for (var i = 0; i < applied.Length; i++)
-                applied[i] = float.NaN;
-            Update();
+            applied[i] = float.NaN;
         }
 
         public void Update()
@@ -61,7 +74,7 @@ namespace BMB
                 GroundMu[i] = mu;
                 if (mu == applied[i])
                     continue;
-                body.SetFootFriction(i, baseStatic * mu, baseDynamic * mu, combine);
+                body.SetFootFriction(i, baseStatic[i] * mu, baseDynamic[i] * mu, combine);
                 applied[i] = mu;
             }
         }

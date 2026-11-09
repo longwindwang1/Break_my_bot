@@ -75,11 +75,13 @@ namespace BMB
     }
 
 #pragma warning disable IDE1006, CS0649
-    /// <summary>experiments/w3_unity/wm_calibration_unity.json (written by BMB/World model/Calibrate).</summary>
+    /// <summary>experiments/w3_unity/wm_calibration_unity.json (written by BMB/World model/Calibrate + detect events).</summary>
     [Serializable]
     public sealed class UnityWmCalibration
     {
         public string source;
+        /// <summary>How z_bias / z_scale were estimated (see Editor/WorldModelEval.cs ZCorrection).</summary>
+        public string correction;
         public float[] z_bias, z_scale;
         public PolicyCusum[] policies;
 

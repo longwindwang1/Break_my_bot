@@ -44,6 +44,15 @@ and adapt online.
   the v2_eval scenarios in Unity physics (`experiments/unity_eval/`, Experiment 3): at μ 1.0 / 0.5 and with
   pushes v2 keeps 92–97 % (Isaac 95–98 %), v1 drops to 66–78 % (Isaac 95–98 %); low friction costs both more than
   in Isaac.
+- Unity world model (branch `unity-game`, `experiments/unity_wm/`): `docs/unity_handoff.md` §11 levels 1–4 pass
+  (ONNX 7.6e-6, wm_in 2.4e-7, surprisal 3e-7, identical alarms). It drives the blue ghost (0.5 s imagined rollout,
+  0.3 cm off on flat ground) and the HUD WORLD MODEL card.
+  - Isaac's thresholds give 6–13× the false alarms in Unity on flat / rough ground.
+  - Recalibrated on flat + rough ground (`experiments/w3_unity/wm_calibration_unity.json`): the budget is met and
+    ice μ ≤ 0.1 is still detected 89–96 % within 2 s, pushes 100 %.
+  - On stairs / boxes / pits normal walking is as surprising as ice in Unity.
+  - The §11.4 MAD z-scale does not suit Unity's peaked residuals; a std ratio to Isaac's is used instead.
+  - Not done yet: closed-loop alarm → cautious gait (experiment 1).
 
 ## Two machines (this file is shared by both)
 - **Linux** (training): Isaac Lab, PyTorch, ONNX export, parity tests. Every command under "Commands" assumes it.
@@ -110,6 +119,16 @@ docs/         design notes
   ports Isaac's sub-terrains); `FrictionZones` + `FootFrictionDriver` set per-foot μ like v2's training. HUD: UI Toolkit
   (`GameUI`, `Assets/UI/`). Headless runs and tests use `HeadlessWorld` (preview scene, many robots, stepped by hand).
 - Physics: PGS solver, 4/1 iterations (Isaac uses TGS 4/0; switching to TGS did not change the eval, see `unity_eval`).
+- World model (`Runtime/WorldModel/`):
+  - `WorldModelSpec` is the yaml's `world_model`, and `WorldModelLayout` cuts the frame and scan from the policy obs
+    (rough = v1, v2 = v2).
+  - `Go2Controller` runs a `WorldModelMonitor` after each policy step if `worldModel` is on: the 6-frame buffer,
+    `WorldModelRunner` and `SurprisalDetector`.
+  - `SurprisalParams.Load` prefers `experiments/w3_unity/wm_calibration_unity.json` over the yaml.
+  - `WorldModelDreamer` imagines H steps with the policy in the loop for `GhostView` / `GhostRobot`, a visual-only
+    Go2 posed by FK.
+  - Alarms → `Go2Controller.SurpriseAlarm` → "surprise" events.
+  - Calibration and detection: `Editor/WorldModelEval.cs`.
 
 ## Core specs
 - Robot: Unitree Go2, same official URDF in Isaac Lab and Unity
@@ -200,6 +219,10 @@ Unity (Windows; editor menu or MCP `execute_menu_item`):
 - Unity vs Isaac report: `BMB/Headless trials/Run all and write report` → `experiments/w3_unity/trials.md`
 - Isaac eval scenarios in Unity: `BMB/Eval/Run Isaac scenarios (v1 + v2, 64 envs)` (background job, ~10 min, cancel from
   the progress bar; entering Play or recompiling stops it) → `experiments/unity_eval/{results.jsonl, episodes.csv, summary.md}`
+- World-model surprisal in Unity: `BMB/World model/Calibrate + detect events (v1 + v2, ~15 min)`, or `Recalibrate (clean
+  split only, reuse saved events)` (~9 min) → `experiments/w3_unity/wm_calibration_unity.json` (used by the runtime) and
+  `experiments/unity_wm/{calibration,detection}.md`; raw z goes to `logs/unity_wm/*.bin`, and `Re-analyse saved runs`
+  redoes the tables without simulating. Background jobs like the eval.
 - Tests: MCP `run_tests` (EditMode, assembly `BMB.Tests.EditMode`), or with the project closed:
   `Unity.exe -batchmode -projectPath unity -runTests -testPlatform EditMode -testResults results.xml`.
   Keep a saved scene open: a modified untitled scene makes the test runner block on a save dialog.

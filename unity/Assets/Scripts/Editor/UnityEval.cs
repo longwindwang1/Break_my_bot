@@ -258,79 +258,139 @@ namespace BMB.Editor
             return rows;
         }
 
-        static LevelGround BuildArena(HeadlessWorld world, EvalScenario s, EvalOptions o, out List<GroundFeature> tiles)
+        static LevelGround BuildArena(HeadlessWorld world, EvalScenario s, EvalOptions o, out List<GroundFeature> tiles) =>
+            BuildTileArena(world, o.TilesPerSide, o.Border, o.Seed,
+                           s.Pits ? new[] { (IsaacTileType.Pits, 1f) } : IsaacTiles.V2Mix,
+                           s.Pits ? new Vector2(0.5f, 1f) : new Vector2(0f, 0.5f), out tiles);
+
+        /// <summary>
+        /// n × n Isaac tiles (8 m) drawn from <paramref name="mix"/> with a uniform difficulty, centred at the origin,
+        /// with a flat border. The terrain depends only on the seed (same terrain for every scenario of a kind).
+        /// </summary>
+        public static LevelGround BuildTileArena(HeadlessWorld world, int n, float border, int seed,
+                                                 (IsaacTileType type, float proportion)[] mix, Vector2 difficulty, out List<GroundFeature> tiles,
+                                                 float flatShare = 0f)
         {
-            var n = o.TilesPerSide;
-            var side = n * IsaacTiles.Size + 2f * o.Border;
+            var side = n * IsaacTiles.Size + 2f * border;
             var level = world.AddLevelGround(new Vector2(side, side));
-            var rng = new System.Random(o.Seed);  // same terrain for every scenario of a kind, like Isaac's seed 0
-            var mix = s.Pits ? new[] { (IsaacTileType.Pits, 1f) } : IsaacTiles.V2Mix;
-            var difficulty = s.Pits ? new Vector2(0.5f, 1f) : new Vector2(0f, 0.5f);
-            tiles = new List<GroundFeature>();
+            tiles = TileLayout(n, seed, mix, difficulty, flatShare);
+            foreach (var f in tiles)
+                level.Add(f, refresh: false);
+            level.Refresh();
+            Physics.SyncTransforms();
+            return level;
+        }
+
+        /// <summary>
+        /// The tiles <see cref="BuildTileArena"/> lays out for a seed (without building them). With
+        /// <paramref name="flatShare"/> &gt; 0, that share of tiles is flat (<see cref="IsFlat"/>: a pyramid slope at
+        /// difficulty 0); 0 keeps the random sequence of the evaluation.
+        /// </summary>
+        public static List<GroundFeature> TileLayout(int n, int seed, (IsaacTileType type, float proportion)[] mix, Vector2 difficulty,
+                                                     float flatShare = 0f)
+        {
+            var rng = new System.Random(seed);
+            var tiles = new List<GroundFeature>();
             for (var r = 0; r < n; r++)
             for (var c = 0; c < n; c++)
             {
-                var centre = new Vector2((c - (n - 1) / 2f) * IsaacTiles.Size, (r - (n - 1) / 2f) * IsaacTiles.Size);
                 var f = new GroundFeature
                 {
                     type = GroundFeatureType.IsaacTile,
                     tile = IsaacTiles.Sample(rng, mix),
                     difficulty = Uniform(rng, difficulty.x, difficulty.y),
                     seed = rng.Next(),
-                    centre = centre,
+                    centre = new Vector2((c - (n - 1) / 2f) * IsaacTiles.Size, (r - (n - 1) / 2f) * IsaacTiles.Size),
                     size = new Vector2(IsaacTiles.Size, IsaacTiles.Size),
                 };
-                level.Add(f, refresh: false);
+                if (flatShare > 0f && rng.NextDouble() < flatShare)
+                    (f.tile, f.difficulty) = (IsaacTileType.PyramidSlope, 0f);
                 tiles.Add(f);
             }
-            level.Refresh();
-            Physics.SyncTransforms();
-            return level;
+            return tiles;
+        }
+
+        /// <summary>A flat tile of <see cref="TileLayout"/>: a pyramid slope with slope 0.</summary>
+        public static bool IsFlat(GroundFeature f) => f.tile == IsaacTileType.PyramidSlope && f.difficulty == 0f;
+
+        /// <summary>Everything random about one env, drawn once and shared by all policies (paired comparison).</summary>
+        public sealed class EnvDraw
+        {
+            /// <summary>Spawn offset from the tile centre (Unity frame), yaw (deg).</summary>
+            public Vector3 Offset;
+            public float Yaw;
+            /// <summary>Payload (kg) and base COM offset (Isaac base axes, m).</summary>
+            public float Mass;
+            public Vector3 Com;
+            public float[] Kp, Kd;
+            public int CommandSeed, PushSeed;
+
+            /// <summary>Go2V2EnvCfg_PLAY's reset / startup randomization (see the class summary).</summary>
+            public static EnvDraw Sample(int seed, int env, int numJoints)
+            {
+                var rng = new System.Random(unchecked(seed * 7919 + env * 104729 + 13));
+                var d = new EnvDraw
+                {
+                    Offset = IsaacFrame.PolarFromIsaac(new Vector3(Uniform(rng, -0.5f, 0.5f), Uniform(rng, -0.5f, 0.5f), 0f)),
+                    Yaw = Uniform(rng, -180f, 180f),
+                    Mass = Uniform(rng, -1f, 3f),
+                    Com = new Vector3(Uniform(rng, -0.05f, 0.05f), Uniform(rng, -0.05f, 0.05f), Uniform(rng, -0.02f, 0.02f)),
+                    Kp = new float[numJoints],
+                    Kd = new float[numJoints],
+                };
+                for (var j = 0; j < numJoints; j++)
+                {
+                    d.Kp[j] = Uniform(rng, 0.9f, 1.1f);
+                    d.Kd[j] = Uniform(rng, 0.9f, 1.1f);
+                }
+                d.CommandSeed = rng.Next();
+                d.PushSeed = rng.Next();
+                return d;
+            }
+
+            /// <summary>Applies payload, COM and gain scales to a robot.</summary>
+            public void ApplyDynamics(Go2Controller robot)
+            {
+                robot.Body.SetPayload(Mass, Com);
+                robot.SetGainScales(Kp, Kd);
+            }
+        }
+
+        /// <summary>A seeded shuffle of the tile indices: env e spawns on tiles[order[e % count]].</summary>
+        public static int[] TileOrder(int count, int seed)
+        {
+            var order = Enumerable.Range(0, count).ToArray();
+            var shuffle = new System.Random(seed + 7);
+            for (var i = order.Length - 1; i > 0; i--)
+            {
+                var j = shuffle.Next(i + 1);
+                (order[i], order[j]) = (order[j], order[i]);
+            }
+            return order;
         }
 
         static List<Env> SpawnRobots(HeadlessWorld world, EvalScenario s, EvalOptions o, List<GroundFeature> tiles, List<PolicyRunner> runners)
         {
             var itf = world.Interface;
             var cautious = itf.Policy("v2").CautiousGait;
-            var order = Enumerable.Range(0, tiles.Count).ToArray();
-            var shuffle = new System.Random(o.Seed + 7);
-            for (var i = order.Length - 1; i > 0; i--)
-            {
-                var j = shuffle.Next(i + 1);
-                (order[i], order[j]) = (order[j], order[i]);
-            }
+            var order = TileOrder(tiles.Count, o.Seed);
             var envs = new List<Env>();
-            var n = itf.NumJoints;
             for (var e = 0; e < o.EnvsPerPolicy; e++)
             {
-                // Everything random about env e is drawn once and shared by all policies (paired comparison).
-                var rng = new System.Random(unchecked(o.Seed * 7919 + e * 104729 + 13));
+                var draw = EnvDraw.Sample(o.Seed, e, itf.NumJoints);
                 var tile = tiles[order[e % order.Length]];
                 var tileCentre = new Vector3(tile.centre.x, 0f, tile.centre.y);  // LevelGround sits at the origin
-                var offset = IsaacFrame.PolarFromIsaac(new Vector3(Uniform(rng, -0.5f, 0.5f), Uniform(rng, -0.5f, 0.5f), 0f));
-                var yaw = Uniform(rng, -180f, 180f);
-                var mass = Uniform(rng, -1f, 3f);
-                var com = new Vector3(Uniform(rng, -0.05f, 0.05f), Uniform(rng, -0.05f, 0.05f), Uniform(rng, -0.02f, 0.02f));
-                var kp = new float[n];
-                var kd = new float[n];
-                for (var j = 0; j < n; j++)
-                {
-                    kp[j] = Uniform(rng, 0.9f, 1.1f);
-                    kd[j] = Uniform(rng, 0.9f, 1.1f);
-                }
-                var commandSeed = rng.Next();
-                var pushSeed = rng.Next();
+                var mass = draw.Mass;
+                var commandSeed = draw.CommandSeed;
+                var pushSeed = draw.PushSeed;
 
                 for (var p = 0; p < o.Policies.Length; p++)
                 {
-                    var robot = world.AddRobot(o.Policies[p].Variant, tileCentre + offset, yaw, footFriction: s.FootMu,
+                    var robot = world.AddRobot(o.Policies[p].Variant, tileCentre + draw.Offset, draw.Yaw, footFriction: s.FootMu,
                                                resetOnFall: false, sharedPolicy: runners[p]);
                     robot.SetFallCriteria(0f, 0f);  // base contact only
                     if (o.RandomizeDynamics)
-                    {
-                        robot.Body.SetPayload(mass, com);
-                        robot.SetGainScales(kp, kd);
-                    }
+                        draw.ApplyDynamics(robot);
                     if (s.Deceive && robot.Scanner != null)
                         robot.Scanner.Deceive = true;
                     var sampler = new CommandSampler(itf.Commands, new System.Random(commandSeed));
@@ -353,7 +413,7 @@ namespace BMB.Editor
             return envs;
         }
 
-        static float Uniform(System.Random rng, float lo, float hi) => lo + (float)rng.NextDouble() * (hi - lo);
+        public static float Uniform(System.Random rng, float lo, float hi) => lo + (float)rng.NextDouble() * (hi - lo);
 
         // --- output ---------------------------------------------------------------------------------------------
 
