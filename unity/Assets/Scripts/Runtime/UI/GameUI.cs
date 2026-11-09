@@ -19,6 +19,8 @@ namespace BMB
     {
         [SerializeField] DisturbanceManager manager;
         [SerializeField] CommandSource commands;
+        [Tooltip("The world model's ghost (optional): its toggle and horizon appear on the WORLD MODEL card")]
+        [SerializeField] GhostView ghost;
         [Tooltip("Show the controls overlay when play starts")]
         [SerializeField] bool showHelpOnStart = true;
 
@@ -39,27 +41,41 @@ namespace BMB
         float toastUntil;
         float turnHeld;
 
+        // world model card
+        VisualElement wmCard, wmCusum;
+        Label wmCal, wmSurprise, wmFall, wmAlarm;
+        SurprisalGraph wmGraph;
+        Button ghostButton;
+        NeonSlider ghostAhead;
+        Go2Controller sampled;
+        float alarmShownUntil;
+        string lastAlarmKind = "";
+
         public VisualElement Root => root;
+        /// <summary>Samples in the surprise plot (for tests).</summary>
+        public int SurpriseSamples => wmGraph?.Count ?? 0;
         public bool HelpVisible => help != null && help.style.display != DisplayStyle.None;
 
         void OnEnable()
         {
             var doc = GetComponent<UIDocument>();
             if (doc != null && doc.rootVisualElement != null && manager != null)
-                Bind(doc.rootVisualElement, manager, commands);
+                Bind(doc.rootVisualElement, manager, commands, ghost);
         }
 
         void OnDisable()
         {
             if (manager != null)
                 manager.PointerOverUI = false;
+            SampleFrom(null);
         }
 
         /// <summary>Wires a cloned GameHud tree to the game (also used by tests without a panel).</summary>
-        public void Bind(VisualElement treeRoot, DisturbanceManager disturbanceManager, CommandSource commandSource)
+        public void Bind(VisualElement treeRoot, DisturbanceManager disturbanceManager, CommandSource commandSource, GhostView ghostView = null)
         {
             manager = disturbanceManager;
             commands = commandSource;
+            ghost = ghostView;
             root = treeRoot.Q("root") ?? treeRoot;
             cards.Clear();
             railButtons.Clear();
@@ -94,6 +110,7 @@ namespace BMB
             feet = new FootDiagram();
             root.Q("feet-slot").Add(feet);
             eventsList = root.Q("events");
+            BuildWorldModel();
 
             BuildDrive(root.Q("drive-mode"), root.Q("drive-detail"));
             BuildStick();
@@ -260,6 +277,98 @@ namespace BMB
             return l;
         }
 
+        void BuildWorldModel()
+        {
+            wmCard = root.Q("wm-card");
+            wmCal = root.Q<Label>("wm-cal");
+            wmAlarm = root.Q<Label>("wm-alarm");
+            wmSurprise = root.Q<Label>("wm-surprise");
+            wmFall = root.Q<Label>("wm-fall");
+            wmCusum = root.Q("wm-cusum");
+            wmGraph = new SurprisalGraph();
+            var slot = root.Q("wm-graph-slot");
+            slot.Clear();
+            slot.Add(wmGraph);
+            Tip(slot, "Surprise of the last 5 s: line = how unexpected each step was (σ), area = evidence towards an alarm");
+            Tip(wmCal, "Alarm thresholds calibrated in Unity physics, or the Isaac Lab ones from robot_interface.yaml");
+
+            var controls = root.Q("wm-ghost");
+            controls.Clear();
+            ghostButton = null;
+            ghostAhead = null;
+            if (ghost != null)
+            {
+                ghostButton = new Button(() => ghost.Show = !ghost.Show) { text = "GHOST" };
+                ghostButton.AddToClassList("seg");
+                Tip(ghostButton, "The world model's imagined robot a little ahead (V)");
+                controls.Add(ghostButton);
+                ghostAhead = new NeonSlider(new SliderControl
+                {
+                    Label = "Ghost ahead", Unit = "s", Format = "0.0", Step = 0.1f,
+                    Get = () => ghost.HorizonSeconds, Set = v => ghost.HorizonSeconds = v,
+                    Range = () => new Vector2(0.2f, 1f),
+                });
+                controls.Add(ghostAhead);
+            }
+            SampleFrom(manager.Controller);
+        }
+
+        /// <summary>One surprise sample per policy step, read right after the world model ran.</summary>
+        void SampleFrom(Go2Controller c)
+        {
+            if (sampled == c)
+                return;
+            if (sampled != null)
+                sampled.PolicyStepped -= OnPolicyStepped;
+            sampled = c;
+            if (sampled != null)
+                sampled.PolicyStepped += OnPolicyStepped;
+            wmGraph?.ClearSamples();
+        }
+
+        void OnPolicyStepped(Go2Controller c)
+        {
+            var m = c.WorldModel;
+            if (m == null || wmGraph == null)
+                return;
+            var d = m.Detector;
+            wmGraph.Push(d.Valid ? (float)d.X : 0f, (float)(d.GPeak / d.Params.H), d.Alarm);
+            if (d.Alarm)
+            {
+                alarmShownUntil = Time.unscaledTime + 1.2f;
+                lastAlarmKind = d.Spike ? "SPIKE" : "CUSUM";
+            }
+        }
+
+        void RefreshWorldModel(Go2Controller c)
+        {
+            var m = c?.WorldModel;
+            wmCard.style.display = m != null ? DisplayStyle.Flex : DisplayStyle.None;
+            if (m == null)
+                return;
+            SampleFrom(c);
+            var d = m.Detector;
+            var unity = d.Params.Source == "unity";
+            wmCal.text = unity ? "UNITY CAL" : "ISAAC CAL";
+            wmCal.EnableInClassList("unity", unity);
+            wmSurprise.text = d.Scored ? $"{d.X,5:+0.0;-0.0} σ" : "warm-up";
+            var ratio = (float)(d.G / d.Params.H);
+            wmCusum.style.width = Length.Percent(Mathf.Clamp01(ratio) * 100f);
+            wmCusum.EnableInClassList("hot", ratio > 0.7f);
+            var fall = m.Prediction.FallProb;
+            wmFall.text = m.HasPrediction ? $"{fall[1] * 100f,3:0} % / {fall[2] * 100f,3:0} %" : "—";
+            wmFall.EnableInClassList("alert", m.HasPrediction && fall[1] > 0.3f);
+            var alarmOn = Time.unscaledTime < alarmShownUntil;
+            wmAlarm.style.display = alarmOn ? DisplayStyle.Flex : DisplayStyle.None;
+            wmAlarm.text = $"SURPRISE · {lastAlarmKind}";
+            if (ghostButton != null)
+            {
+                ghostButton.EnableInClassList("on", ghost.Show);
+                ghostAhead.style.display = ghost.Show ? DisplayStyle.Flex : DisplayStyle.None;
+                ghostAhead.Refresh();
+            }
+        }
+
         void BuildDrive(VisualElement mode, VisualElement detail)
         {
             driveDetail = detail;
@@ -327,7 +436,7 @@ namespace BMB
                 ("KEYS", new[]
                 {
                     ("1 – 7", "Select a tool · Esc none"), ("W/S A/D Q/E", "Drive · Tab cruise/manual"), ("R", "Reset the robot"),
-                    ("H", "Training ranges / hard mode"), ("F1", "This help"),
+                    ("H", "Training ranges / hard mode"), ("V", "World-model ghost on / off"), ("F1", "This help"),
                 }),
                 ("TOOLS", new[]
                 {
@@ -459,6 +568,7 @@ namespace BMB
             RefreshTool();
             if (ready)
                 RefreshRobot(c);
+            RefreshWorldModel(ready ? c : null);
             RefreshEvents();
             RefreshDrive();
         }

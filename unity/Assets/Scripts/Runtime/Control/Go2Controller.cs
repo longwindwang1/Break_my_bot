@@ -125,6 +125,8 @@ namespace BMB
         public event Action<Go2Controller, string> Fell;
         /// <summary>Raised after every reset to the spawn pose.</summary>
         public event Action<Go2Controller> WasReset;
+        /// <summary>Raised on a world-model surprisal alarm (spike or CUSUM), inside the policy step.</summary>
+        public event Action<Go2Controller, WorldModelMonitor> SurpriseAlarm;
 
         /// <summary>Wiring for code-built setups (the scene builder uses serialized fields instead).</summary>
         /// <param name="sharedPolicy">Optional inference runner shared by several robots (it is stateless); not disposed here.</param>
@@ -182,6 +184,7 @@ namespace BMB
             if (ownsWm)
                 wmRunner = WorldModelRunner.Load(itf);
             monitor = new WorldModelMonitor(itf, variant, wmRunner, wmSurprisal);
+            monitor.Alarmed += m => SurpriseAlarm?.Invoke(this, m);
         }
 
         /// <summary>Where the robot returns on reset (Unity frame; y is recomputed from the terrain).</summary>

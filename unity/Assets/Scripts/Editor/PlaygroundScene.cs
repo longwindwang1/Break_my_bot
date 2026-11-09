@@ -52,12 +52,12 @@ namespace BMB.Editor
             document.panelSettings = PanelSettingsAsset();
             document.visualTreeAsset = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(HudPath);
             var gameUi = ui.AddComponent<GameUI>();
-            W3Scenes.Set(gameUi, ("manager", manager), ("commands", parts.Commands));
+            W3Scenes.Set(gameUi, ("manager", manager), ("commands", parts.Commands), ("ghost", ghost));
             if (Object.FindFirstObjectByType<EventSystem>() == null)
                 new GameObject("EventSystem", typeof(EventSystem), typeof(InputSystemUIInputModule));
 
             EditorSceneManager.SaveScene(parts.Scene, ScenePath);
-            Debug.Log($"[BMB] Built {ScenePath}: v2, foot μ 1.0, {LevelSize} m editable ground, manual control (W/S A/D Q/E), disturbance tools 1–7, H = hard mode, F1 = help");
+            Debug.Log($"[BMB] Built {ScenePath}: v2, foot μ 1.0, {LevelSize} m editable ground, manual control (W/S A/D Q/E), disturbance tools 1–7, H = hard mode, V = world-model ghost, F1 = help");
         }
 
         public const string HudPath = "Assets/UI/GameHud.uxml";

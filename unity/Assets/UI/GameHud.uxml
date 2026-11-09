@@ -49,6 +49,27 @@
                     <ui:Label text="FOOT FRICTION" class="sub-title" />
                     <ui:VisualElement name="feet-slot" class="feet-slot" picking-mode="Ignore" />
                 </ui:VisualElement>
+                <ui:VisualElement name="wm-card" class="panel card wm-card">
+                    <ui:VisualElement class="card-head" picking-mode="Ignore">
+                        <ui:Label text="WORLD MODEL" class="card-title" />
+                        <ui:VisualElement class="spacer" picking-mode="Ignore" />
+                        <ui:Label name="wm-alarm" text="SURPRISE" class="wm-alarm" />
+                        <ui:Label name="wm-cal" class="wm-cal" />
+                    </ui:VisualElement>
+                    <ui:VisualElement name="wm-graph-slot" class="wm-graph-slot" picking-mode="Ignore" />
+                    <ui:VisualElement class="stat">
+                        <ui:Label text="SURPRISE" class="stat-name" />
+                        <ui:Label name="wm-surprise" class="stat-value num" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="bar-track" picking-mode="Ignore">
+                        <ui:VisualElement name="wm-cusum" class="bar wm-cusum" picking-mode="Ignore" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="stat">
+                        <ui:Label text="FALL RISK 0.5 / 1 S" class="stat-name" />
+                        <ui:Label name="wm-fall" class="stat-value num" />
+                    </ui:VisualElement>
+                    <ui:VisualElement name="wm-ghost" class="wm-ghost" />
+                </ui:VisualElement>
                 <ui:VisualElement name="events-card" class="panel card events-card">
                     <ui:Label text="EVENTS" class="card-title" />
                     <ui:VisualElement name="events" class="events" />

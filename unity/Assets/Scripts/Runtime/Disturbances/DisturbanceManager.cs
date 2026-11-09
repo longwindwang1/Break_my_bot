@@ -98,6 +98,7 @@ namespace BMB
             {
                 controller.Fell -= OnFell;
                 controller.WasReset -= OnReset;
+                controller.SurpriseAlarm -= OnSurprise;
             }
             if (subscribed && level != null)
                 level.CoverBroken -= OnCoverBroken;
@@ -110,9 +111,31 @@ namespace BMB
                 return;
             controller.Fell += OnFell;
             controller.WasReset += OnReset;
+            controller.SurpriseAlarm += OnSurprise;
             if (level != null)
                 level.CoverBroken += OnCoverBroken;
             subscribed = true;
+        }
+
+        /// <summary>Surprisal alarms are logged at most once per this many simulated seconds (ice re-alarms 1–2×/s).</summary>
+        public const float SurpriseLogInterval = 1f;
+        double lastSurpriseLogged = double.NegativeInfinity;
+        int surprisesSinceLogged;
+
+        void OnSurprise(Go2Controller c, WorldModelMonitor m)
+        {
+            surprisesSinceLogged++;
+            if (c.TotalTime - lastSurpriseLogged < SurpriseLogInterval)
+                return;
+            var d = m.Detector;
+            var p = d.Params;
+            var what = d.Spike
+                ? $"spike |z| {d.SpikeStat:0} > {p.SpikeZ:0} (base velocity)"
+                : $"CUSUM g {d.GPeak:0} > h {p.H:0}";
+            var more = surprisesSinceLogged > 1 ? $" (+{surprisesSinceLogged - 1} since last entry)" : "";
+            Record("surprise", what + more, false);
+            lastSurpriseLogged = c.TotalTime;
+            surprisesSinceLogged = 0;
         }
 
         void OnFell(Go2Controller c, string reason) => Record("fall", reason, false);

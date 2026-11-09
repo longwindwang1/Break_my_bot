@@ -119,6 +119,49 @@ namespace BMB.Tests
         }
 
         [Test]
+        public void World_model_card_shows_surprise_alarms_and_ghost_controls()
+        {
+            var world = HeadlessWorld.Create(flatGround: false);
+            using (world)
+            {
+                var level = world.AddLevelGround(new Vector2(10f, 10f));
+                var robot = world.AddRobot("v2", Vector3.zero, footFriction: 1f, command: new Vector3(0.4f, 0f, 0f), worldModel: true,
+                                           surprisal: SurprisalParams.Isaac(RobotInterface.Load(), "v2"));
+                var m = world.AddDisturbances(robot, level: level);
+                var ghost = world.Add(new GameObject("WorldModel")).AddComponent<GhostView>();
+                ghost.Configure(robot);
+                var root = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(PlaygroundScene.HudPath).CloneTree();
+                var commands = world.Add(new GameObject("Commands")).AddComponent<CommandSource>();
+                var ui = world.Add(new GameObject("UI")).AddComponent<GameUI>();
+                ui.Bind(root, m, commands, ghost);
+
+                world.Run(3f);
+                ui.Refresh();
+                Assert.AreNotEqual(DisplayStyle.None, root.Q("wm-card").style.display.value, "card shown with a world model");
+                Assert.That(ui.SurpriseSamples, Is.InRange(148, 151), "one sample per policy step");
+                Assert.AreEqual("ISAAC CAL", root.Q<Label>("wm-cal").text);
+                StringAssert.EndsWith("σ", root.Q<Label>("wm-surprise").text);
+                StringAssert.Contains("%", root.Q<Label>("wm-fall").text);
+                Assert.IsTrue(root.Q("wm-ghost").Q<Button>().ClassListContains("on"), "ghost toggle on");
+                ghost.Show = false;
+                ui.Refresh();
+                Assert.IsFalse(root.Q("wm-ghost").Q<Button>().ClassListContains("on"), "ghost toggle off");
+
+                // A training-range push is a spike alarm (Isaac: 99 % within the step); it shows on the card and in the log.
+                m.Push(new Vector2(0f, 0.5f));
+                world.Run(0.5f);
+                ui.Refresh();
+                Assert.That(robot.WorldModel.Detector.Alarms, Is.GreaterThan(0), "push detected");
+                Assert.AreNotEqual(DisplayStyle.None, root.Q<Label>("wm-alarm").style.display.value, "alarm pill");
+                var surprise = m.Log.Events.Where(e => e.Type == "surprise").ToList();
+                Assert.AreEqual(1, surprise.Count, "one logged surprise");
+                StringAssert.StartsWith("spike", surprise[0].Detail);
+                Assert.IsTrue(root.Q("events").Children().Any(r => r.ClassListContains("surprise")), "shown in the event feed");
+                Debug.Log($"[BMB] World model HUD: {surprise[0].Detail}; card '{root.Q<Label>("wm-surprise").text}', fall '{root.Q<Label>("wm-fall").text}'");
+            }
+        }
+
+        [Test]
         public void Stick_and_turn_buttons_drive_the_manual_command()
         {
             var commands = new GameObject("Commands").AddComponent<CommandSource>();

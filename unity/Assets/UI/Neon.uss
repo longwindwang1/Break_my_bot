@@ -609,6 +609,64 @@ Button.btn .neon-icon {
 .event.deceptive .event-bar { background-color: #B26BFF; }
 .event.drag .event-bar { background-color: #FF7AE6; }
 .event.ball .event-bar { background-color: #FF8A1F; }
+.event.surprise .event-bar { background-color: #6C8CFF; }
+.event.surprise .event-text { color: #B9C8FF; }
+
+/* ---- world model card ----------------------------------------------------------------------------------------- */
+
+.wm-graph-slot {
+    height: 56px;
+    margin: 0 0 6px 0;
+    border-width: 1px;
+    border-color: rgba(0, 229, 255, 0.18);
+    border-radius: 4px;
+    background-color: rgba(0, 229, 255, 0.03);
+}
+
+.wm-graph {
+    flex-grow: 1;
+}
+
+.wm-cal {
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--dim);
+    border-width: 1px;
+    border-color: rgba(110, 140, 160, 0.5);
+    border-radius: 9px;
+    padding: 1px 8px;
+    margin-bottom: 6px;
+}
+
+.wm-cal.unity {
+    color: var(--green);
+    border-color: rgba(57, 255, 136, 0.6);
+}
+
+.wm-alarm {
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: #070B14;
+    background-color: var(--magenta);
+    border-radius: 9px;
+    padding: 1px 8px;
+    margin: 0 6px 6px 0;
+    -unity-font-style: bold;
+}
+
+.wm-cusum {
+    top: 0;
+    height: 8px;
+    background-color: rgba(255, 43, 214, 0.75);
+}
+
+.wm-cusum.hot {
+    background-color: var(--red);
+}
+
+.wm-ghost {
+    margin-top: 6px;
+}
 
 /* ---- drive and stick ------------------------------------------------------------------------------------------ */
 
