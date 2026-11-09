@@ -13,6 +13,8 @@ functions. Used by isaac/collect_wm_data.py, isaac/dump_terrain.py and isaac/eva
   geo_train      terrain-risk data: clean conditions, terrain mix + pits_deep (15-30 cm, truthful scan)
   geo_test       same, another terrain seed (held-out terrain)
   geo_train2/3   more terrain-risk training data (other terrain seeds)
+  ice_train(2/3) as geo_train plus ice patches (isaac/ice.py), all visible; other terrain seeds
+  ice_test       as ice_train, held-out terrain seed, half of the ice patches hidden
 """
 
 from __future__ import annotations
@@ -29,9 +31,14 @@ SPLITS = {
     "geo_test": dict(num_envs=2048, steps=1500, seed=700),
     "geo_train2": dict(num_envs=4096, steps=1500, seed=610),
     "geo_train3": dict(num_envs=4096, steps=1500, seed=620),
+    "ice_train": dict(num_envs=4096, steps=1500, seed=800),
+    "ice_train2": dict(num_envs=4096, steps=1500, seed=810),
+    "ice_train3": dict(num_envs=4096, steps=1500, seed=820),
+    "ice_test": dict(num_envs=2048, steps=1500, seed=900),
 }
 NOISY_SPLITS = ("train", "train_nominal")  # every 4th env gets action noise
-GEO_SPLITS = ("geo_train", "geo_test", "geo_train2", "geo_train3")
+ICE_SPLITS = {"ice_train": 0.0, "ice_train2": 0.0, "ice_train3": 0.0, "ice_test": 0.5}  # -> hidden patch fraction
+GEO_SPLITS = ("geo_train", "geo_test", "geo_train2", "geo_train3", *ICE_SPLITS)  # pits_deep + height map
 EVENTS = ["none", "mu_0.3", "mu_0.1", "mu_0.05", "foot_0.05", "push_0.5", "push_1.0"]  # id = index
 POLICY_PATTERN = ["v2", "v2", "v1"]  # env i -> POLICY_PATTERN[i % 3]
 POLICY_IDS = {"v1": 0, "v2": 1}  # world-model policy one-hot order (robot_interface.yaml world_model.policies)

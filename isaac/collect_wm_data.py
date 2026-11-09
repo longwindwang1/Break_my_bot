@@ -28,7 +28,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 from isaac.wm_splits import (  # noqa: E402  (no isaaclab imports at module level)
-    EVENTS, GEO_SPLITS, NOISY_SPLITS, POLICY_IDS, POLICY_PATTERN, SPLITS, TILES, configure, install_tile_logger,
+    EVENTS, GEO_SPLITS, ICE_SPLITS, NOISY_SPLITS, POLICY_IDS, POLICY_PATTERN, SPLITS, TILES, configure, install_tile_logger,
 )
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -62,6 +62,8 @@ import torch  # noqa: E402
 import isaac.bmb_tasks  # noqa: E402, F401
 from isaac.bmb_tasks.go2_v2_env_cfg import FEET, Go2V2EnvCfg_PLAY  # noqa: E402
 from isaac.bmb_tasks.mdp import state as bmb_state  # noqa: E402
+from isaac.ice import IcePhysics, IceSpec, grid_meta, ice_meta, make_ice_map, tile_centres  # noqa: E402
+from isaac.interface import load_interface  # noqa: E402
 from isaac.policy_loader import load_policy, policy_input  # noqa: E402
 from isaac.terrain_map import raycast_height_map  # noqa: E402
 
@@ -91,6 +93,19 @@ def main():
     gen = cfg.scene.terrain.terrain_generator
     tile_size = float(gen.size[0])
     origins_xy = terrain.terrain_origins.reshape(-1, 3)[:, :2]
+
+    ice = None
+    if args_cli.split in ICE_SPLITS:
+        centres = torch.as_tensor(tile_centres(gen), dtype=torch.float32, device=device).reshape(-1, 2)
+        if not torch.allclose(centres, origins_xy.float(), atol=1e-3):
+            raise RuntimeError("terrain origins are not the tile centres; isaac/ice.py's patch placement assumes they are")
+        ice_grid = grid_meta(gen)
+        ice_spec = IceSpec(hidden_frac=ICE_SPLITS[args_cli.split])
+        ice_map, ice_patches = make_ice_map(gen, ice_grid, args_cli.seed, ice_spec)
+        ice_friction = float(load_interface()["terrain_risk"]["ice"]["friction"])
+        ice = IcePhysics(env, ice_map, ice_grid, ice_friction, foot_ids)
+        print(f"[collect] ice: {len(ice_patches)} patches, cover visible "
+              f"{(ice_map == 1).mean():.3f} hidden {(ice_map == 2).mean():.3f}", flush=True)
 
     nets = {"v2": load_policy("student", args_cli.v2).to(device), "v1": load_policy("v1", args_cli.v1).to(device)}
     kinds = {"v2": "student", "v1": "v1"}
@@ -137,6 +152,8 @@ def main():
         "terminated": ((), np.bool_),  # step t ended the episode with a fall (base contact)
         "truncated": ((), np.bool_),  # step t ended the episode by time-out
     }
+    if ice is not None:
+        fields["foot_ice"] = ((4,), np.uint8)  # ice under each foot during step t (0 none, 1 visible, 2 hidden)
     mm = {
         k: np.lib.format.open_memmap(out_dir / f"{k}.npy", mode="w+", dtype=dt, shape=(T, N, *shape))
         for k, (shape, dt) in fields.items()
@@ -188,6 +205,7 @@ def main():
     next_push = countdown(5.0, 10.0, N)
 
     obs, _ = env.reset(seed=args_cli.seed)
+    ice_s = 0.0
     ever_done = torch.zeros(N, dtype=torch.bool, device=device)
     last_action_mismatch = 0
     t_start = time.time()
@@ -224,6 +242,12 @@ def main():
                         push(ids, torch.full((len(ids),), float(name.split("_")[1]), device=device))
                         push_flag[ids] = True
                     event[ids] = eid
+
+            if ice is not None:  # friction under each foot for step t
+                t_ice = time.perf_counter()
+                ice.update()
+                ice_s += time.perf_counter() - t_ice
+                mm["foot_ice"][t] = ice.code.cpu().numpy()
 
             # record o_t and the state it was computed from
             pol = obs["policy"]
@@ -269,9 +293,13 @@ def main():
             if (t + 1) % 100 == 0 or t == T - 1:
                 meta["steps_written"] = t + 1
                 meta["wall_s"] = round(time.time() - t_start, 1)
+                if ice is not None:
+                    meta["ice_update_s"] = round(ice_s, 1)
+                    meta["ice_writes"] = ice.writes
                 write_meta()
                 print(f"[collect] {args_cli.split} step {t + 1}/{T}  falls so far "
-                      f"{int(np.asarray(mm['terminated'][: t + 1]).sum())}  {meta['wall_s']} s", flush=True)
+                      f"{int(np.asarray(mm['terminated'][: t + 1]).sum())}  {meta['wall_s']} s"
+                      + (f"  (ice update {ice_s:.1f} s, {ice.writes} env writes)" if ice is not None else ""), flush=True)
 
     for m in list(mm.values()) + ([check] if check is not None else []):
         m.flush()
@@ -282,6 +310,12 @@ def main():
         hmap, hmeta = raycast_height_map(gen, device=device)
         np.save(out_dir / "terrain_height.npy", hmap)
         meta["height_map"] = hmeta
+        if ice is not None:
+            if any(hmeta[k] != ice_grid[k] for k in ("res", "x_min", "y_min", "nx", "ny")):
+                raise RuntimeError(f"ice grid {ice_grid} != height map grid {hmeta}")
+            np.save(out_dir / "ice_mask.npy", ice_map)
+            (out_dir / "ice_patches.json").write_text(json.dumps(ice_patches))
+            meta["ice_map"] = ice_meta(ice_grid, args_cli.seed, ice_spec, ice_friction, ice_patches, ice_map)
         print(f"[collect] height map {hmap.shape} res {hmeta['res']} m, misses {hmeta['misses']}", flush=True)
     meta["last_action_mismatch"] = last_action_mismatch
     meta["falls"] = int(np.asarray(mm["terminated"]).sum())

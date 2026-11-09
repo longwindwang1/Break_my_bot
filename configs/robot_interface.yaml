@@ -211,8 +211,9 @@ terrain_risk:
   # Terrain-risk ("vision") model (W6): probability that the robot falls within h policy steps if its base is at a
   # grid cell, facing along the grid's x axis, under a velocity command and policy. Input is only terrain height
   # sampled by vertical ray casts (no RGB), so Isaac Lab and Unity see the same values.
-  # Deployed as export/models/go2_terrain_risk.onnx: inputs "height" [1, 1, H, W] and "cond" [1, 5], output
-  # "risk" [1, 2, H - 16, W - 16] (probabilities, horizons below). H and W are dynamic (window or whole level).
+  # Deployed as export/models/go2_terrain_risk.onnx: inputs "height" [1, 1, H, W], "ice" [1, 1, H, W] (phase 2, see
+  # ice below) and "cond" [1, 5], output "risk" [1, 2, H - 16, W - 16] (probabilities, horizons below). H and W are
+  # dynamic (window or whole level).
   resolution: 0.1            # m between height samples
   receptive_field: 17        # output cell (i, j) depends on input points i..i+16 (x), j..j+16 (y)
   height: "terrain surface z of a vertical ray cast (world frame). Any constant offset is fine: the model is exactly invariant to it; subtract e.g. the window's centre height first for float32 precision"
@@ -224,16 +225,31 @@ terrain_risk:
   window: {nx: 47, ny: 37, x0: -1.3, y0: -1.8}
   # Output cell (i, j) of the window is centred at (x0 + resolution * (i + 8), y0 + resolution * (j + 8)):
   # a 31 x 21 map over x in [-0.5, 2.5] m, y in [-1.0, 1.0] m.
-  # Proactive slowdown (experiments/w6_terrain_risk/): every update_period_s, take the max of risk channel 0 (25 steps)
-  # over the window's output cells whose centre lies within corridor.half_width of the segment from the base along the
-  # (vx, vy) command direction, 0..corridor.length m ahead (if |(vx, vy)| <= 0.1: cells within 0.4 m of the base).
-  # Use the player's original command, not the slowed one. If the max exceeds the policy's threshold, apply
+  # Proactive slowdown (experiments/w6_terrain_risk/, experiments/w6_ice_risk/): every update_period_s, compute the
+  # policy's trigger value per output cell of the window (risk channel 0, 25 steps):
+  #   total       risk with the actual ice input
+  #   ice_excess  risk with the actual ice input - risk with the ice input all zero (the risk the visible ice adds)
+  # Risk ahead = max over the cells whose centre lies within corridor.half_width of the segment from the base along the
+  # (vx, vy) command direction, 0..corridor.length m ahead (if |(vx, vy)| <= 0.1: cells within 0.4 m of the base),
+  # floored at 0. Use the player's original command, not the slowed one. If it exceeds the policy's threshold, apply
   # policies.v2.cautious_gait (|(vx, vy)| scaled down to max_lin_vel, |wz| clamped to max_ang_vel) for hold_s.
   # The window only covers forward motion: valid for vx >= 0.3, |vy| <= 0.2, |wz| <= 0.5.
   slowdown:
     update_period_s: 0.2
     hold_s: 1.0
     corridor: {length: 1.2, half_width: 0.2}
-    # Thresholds calibrated in Isaac Lab on held-out training tiles (the risk ahead exceeds them on 20 % of frames).
-    # v1 gets null: slowing v1 down did not reduce its falls (it is clumsier at low speed).
-    threshold: {v1: null, v2: 0.00862}
+    # v2 gains from slowing before any risk (geometry: -46 % falls per 100 m; ice terrain: -33 %). v1 falls more when
+    # slowed near geometry but less when slowed before visible ice (-32 % ice falls), so it triggers on ice_excess only.
+    trigger: {v1: ice_excess, v2: total}
+    # Calibrated in Isaac Lab on held-out training tiles: exceeded on 20 % of frames (ice_excess: of the ice splits).
+    threshold: {v1: 0.00799, v2: 0.0125}
+  # Ice (phase 2). Physics: an ice surface has static = dynamic friction `friction` and combines with the foot by
+  # multiply, like the terrain (effective contact friction = foot friction * friction). Isaac Lab realizes flush ice
+  # patches by setting a foot's friction to (episode foot friction) * friction while the foot is over an ice cell
+  # (isaac/ice.py); in Unity use ice colliders flush with the ground, PhysicMaterial friction 0.1, combine Multiply.
+  # Visible ice is drawn as ice and enters the model as the "ice" channel; hidden ice looks like the ground around it
+  # (channel 0) and is left to the world model's surprisal.
+  # Model input "ice": at the same points as "height", 1.0 if the vertical ray hits visible ice, else 0.0 (all zeros =
+  # height-only behaviour).
+  ice:
+    friction: 0.1
