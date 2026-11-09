@@ -24,15 +24,26 @@ and adapt online.
   - **Ablation.** A dynamics model trained with ice in its data barely notices ice (0.5–17 %).
   - **Open.** Unity side: world-model buffer, surprisal + CUSUM in C#, recalibration (`docs/unity_handoff.md` §11).
     W6–8: closed-loop alarm → cautious gait (experiment 1).
-- Also done: terrain-risk ("vision") model, phase 1 (2026-11-08).
-  - **Model.** `export/models/go2_terrain_risk.onnx`, spec `terrain_risk` in the yaml. Input is ray-cast terrain height only.
-    Output is P(fall within 0.5/1 s) per cell. It is fully convolutional: the egocentric window gives a forward heat map,
-    a whole level gives a danger map.
-  - **Results** (`experiments/w6_terrain_risk/`, unseen terrain):
+- Also done: terrain-risk ("vision") model, phases 1–2 (2026-11-08).
+  - **Model.** `export/models/go2_terrain_risk.onnx`, spec `terrain_risk` in the yaml. Inputs are ray-cast terrain height
+    plus a visible-ice flag (phase 2). Output is P(fall within 0.5/1 s) per cell. It is fully convolutional: the
+    egocentric window gives a forward heat map, a whole level gives a danger map.
+  - **Phase 1, height** (`experiments/w6_terrain_risk/`, unseen terrain):
     - AUROC 0.906, against 0.84 for geometric rules and 0.98 for the world-model fall head, which sees the robot's state;
     - risk-triggered slowdown cut v2's falls per 100 m by 36–46 % for 14–24 % less speed, while random slowdown did not
       help; v1 gets worse when slowed.
-  - **Open.** Phase 2 (visible vs hidden ice blocks); Unity side (`docs/unity_handoff.md` §12).
+  - **Phase 2, ice** (`experiments/w6_ice_data/`, `experiments/w6_ice_risk/`):
+    - Ice is flush and changes only friction (× 0.1). Isaac realizes it as per-foot friction from an ice map
+      (`isaac/ice.py`). Visible ice is shown to the model; hidden ice is not.
+    - Visible-ice falls: AUROC 0.91, against 0.75–0.79 without the ice channel. The model stays blind to hidden ice, as
+      intended, and geometry prediction is unchanged.
+    - The W5 surprisal fires within 1 s before about 45 % of falls on either kind of ice, against 11 % before other falls.
+    - Closed loop on ice terrain:
+      - v2's total-risk slowdown cut falls per 100 m by 32–33 % (43 % on terrain without ice). Slowing v2 on ice
+        itself does not help.
+      - v1 now slows only for the risk that visible ice adds (`trigger: ice_excess`): its ice falls dropped by 32 % and
+        all falls by 16 %, but only when most of the ice is visible.
+  - **Open.** Unity side (`docs/unity_handoff.md` §12, §12.5).
 - Earlier: W3 smoke test, both sides. Python: `configs/robot_interface.yaml`, ONNX export, parity tests.
   Unity (`experiments/w3_unity/`): flat, rough and v2 walk in Unity physics; verification levels 1–4 of
   `docs/unity_handoff.md` §8 pass (ONNX ≤ 2.2e-6, obs ≤ 3.6e-7, kinematics ≤ 0.006 mm); 44 EditMode tests.
@@ -58,7 +69,7 @@ Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play
 
 - **Isaac Lab**: locomotion policy (PPO), adaptation module, world model data collection
 - **PyTorch**: world model + adaptation module training
-- **Terrain-risk model** (PyTorch, `models/terrain_risk/`): fall risk ahead from ray-cast terrain height; HUD heat map + proactive slowdown
+- **Terrain-risk model** (PyTorch, `models/terrain_risk/`): fall risk ahead from ray-cast terrain height + visible ice; HUD heat map + proactive slowdown
 - **Unity**: level editor, disruption controls, surprisal HUD, ghost-path preview;
   runs all three ONNX models in Unity physics (this is also our sim-to-sim transfer test)
 
@@ -67,7 +78,7 @@ Isaac Lab + PyTorch (train) → ONNX (export) → Unity + Inference Engine (play
 isaac/        launchers (train.py/play.py), our tasks (bmb_tasks/), training wrapper, reference recorder,
               eval_policy.py, interface.py (yaml loader, env.yaml checker, apply_to_env_cfg)
 models/       world_model/ (PyTorch): dataset (masks, labels), ensemble, train, surprisal + CUSUM, evaluate/calibrate;
-              terrain_risk/: height patches, fully convolutional risk net, train, evaluate
+              terrain_risk/: height / ice patches, fully convolutional risk net, train, evaluate (+ evaluate_ice)
 export/       ONNX export + parity tests; deployable models in export/models/ (tracked for the Unity machine)
 unity/        Unity 6000.3.8f1 project: Assets/Scripts/{Runtime,Editor,Tests/EditMode}, Assets/Robots (URDF, Go2.prefab),
               Assets/Scenes (W3_Flat, W3_Rough)
@@ -168,8 +179,11 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
   - data: `collect_wm_data.py --split geo_train|geo_train2|geo_train3|geo_test` (saves `terrain_height.npy`; splits in `isaac/wm_splits.py`);
   - train (~4 min): `... -m models.terrain_risk.train --data logs/wm_data/w6_geo_train logs/wm_data/w6_geo_train2 logs/wm_data/w6_geo_train3 --name w6_risk3`;
   - evaluate: `... -m models.terrain_risk.evaluate --run logs/terrain_risk/<run> --train <3 dirs> --test logs/wm_data/w6_geo_test --wm_run logs/wm/<wm run> --out experiments/w6_terrain_risk`;
-  - closed-loop slowdown: `python isaac/eval_risk_slowdown.py --mode none|always|risk|random ...` (see `experiments/w6_terrain_risk/README.md`);
-  - export + Unity reference: `... export/export_risk_onnx.py --run logs/terrain_risk/<run> --reference_split logs/wm_data/w6_geo_test`.
+  - closed-loop slowdown: `python isaac/eval_risk_slowdown.py --mode none|always|risk|random [--terrain ice_test --ice_view all|none|map --risk_kind total|ice_excess] ...`
+    (see `experiments/w6_terrain_risk/README.md`, `experiments/w6_ice_risk/README.md`);
+  - phase 2 (ice): data `collect_wm_data.py --split ice_train|ice_train2|ice_train3|ice_test` (adds `ice_mask.npy`, `foot_ice.npy`);
+    train on the 3 geo + 3 ice splits; evaluate with `... -m models.terrain_risk.evaluate_ice --run ... --phase1_run ... --test logs/wm_data/w6_ice_test ...`;
+  - export + Unity reference: `... export/export_risk_onnx.py --run logs/terrain_risk/<run> --reference_split logs/wm_data/w6_ice_test`.
 - Export ONNX: `~/miniforge3/envs/env_isaaclab/bin/python export/export_onnx.py --run <log_dir> --variant flat|rough|v2 [--checkpoint model_N.pt] [--opset 15]`
   → `export/models/go2_<variant>.onnx` (input `obs` [1,48|235|1360], output `actions` [1,12]; v2 exports the student;
   opset 18 default, 15 for older Unity Inference Engine versions)

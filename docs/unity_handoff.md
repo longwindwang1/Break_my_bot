@@ -36,7 +36,7 @@ Working rules that apply to you:
 | W3 smoke test, Unity side | Done (2026-11-07). Flat, rough and v2 walk in Unity; §8 levels 1–4 pass. Results, model notes and open questions: `experiments/w3_unity/README.md` |
 | Robust policy v2 | Trained (friction/ice, pushes, payload, hidden pits). `export/models/go2_v2.onnx` and reference `go2_v2.json` are in the repo; parity tests pass (see §9). Runs in Unity (`W3_Rough` scene) |
 | W4–5 world model | Trained and exported: `export/models/go2_wm.onnx`, spec in the yaml `world_model`, Unity reference traces `go2_wm*.json`. See §11. Needs its own buffer, surprisal + CUSUM in C#, and a Unity recalibration |
-| Terrain-risk ("vision") model, phase 1 | Trained and exported: `export/models/go2_terrain_risk.onnx`, spec in the yaml `terrain_risk`, reference windows `go2_terrain_risk.json`. See §12. Needs a ray-cast grid, the ONNX, a HUD heat map and the slowdown trigger (v2 only) |
+| Terrain-risk ("vision") model, phases 1–2 | Trained and exported: `export/models/go2_terrain_risk.onnx` (height + visible-ice input), spec in the yaml `terrain_risk`, reference windows `go2_terrain_risk.json`. See §12. Needs a ray-cast grid with an ice flag, the ONNX, a HUD heat map, the slowdown trigger (v2: total risk; v1: ice excess) and ice colliders (visible / hidden, §12.5) |
 | W6–8 game, W9–10 results | Later |
 
 ## 3. Your task: W3 Unity smoke test
@@ -292,32 +292,42 @@ if g > h or spike: ALARM, g = 0
 - **Where to store it.** Write the values to `experiments/w3_unity/wm_calibration_unity.json`, which the runtime prefers over the yaml values. Do not edit the yaml. Report the per-dim bias and scale: they are data for experiment 3.
 
 
-## 12. Terrain-risk ("vision") model (W6 phase 1, available)
-**What it predicts.** From terrain height alone, the probability that the robot falls within 0.5 s or 1 s if its base were at a given cell, facing along the grid's x axis, under the current command and policy.
+## 12. Terrain-risk ("vision") model (W6 phases 1 and 2, available)
+**What it predicts.** From terrain height and visible ice, the probability that the robot falls within 0.5 s or 1 s if its base were at a given cell, facing along the grid's x axis, under the current command and policy.
 - It warns *before* the robot gets there. This complements the world model (§11), which notices a problem only after the fact.
 - "Vision" here means height from vertical ray casts, not a camera image, so Unity and Isaac see the same numbers.
-- Spec: `configs/robot_interface.yaml` → `terrain_risk`. Results: `experiments/w6_terrain_risk/README.md`.
+- Spec: `configs/robot_interface.yaml` → `terrain_risk`. Results: `experiments/w6_terrain_risk/README.md` (phase 1, height) and `experiments/w6_ice_risk/README.md` (phase 2, ice).
 
-**Result in Isaac Lab (v2, unseen terrain).** Slowing down where the model sees risk ahead cut falls per 100 m by 36–46 % and cost 14–24 % of speed. Random slowdown with the same cautious time did not help. v1 gets worse when slowed, so its threshold is `null`.
+**Results in Isaac Lab (unseen terrain).**
+- **v2.** Slowing down where the model sees risk ahead cut falls per 100 m by:
+  - 36–46 % on terrain without ice (phase-1 model);
+  - 32–33 % on terrain with ice.
+
+  It cost 14–24 % of speed. Random slowdown with the same cautious time did not help.
+- **v1.** It falls more when slowed near geometry, but less when slowed before visible ice: −32 % ice falls per 100 m and −16 % falls overall. It therefore triggers only on the risk that visible ice adds (§12.2).
 
 | Path | What |
 |---|---|
-| `export/models/go2_terrain_risk.onnx` | 113 KB. Inputs `height` [1, 1, H, W] (H, W dynamic) and `cond` [1, 5] = (vx, vy, wz, policy_v1, policy_v2). Output `risk` [1, 2, H − 16, W − 16], probabilities for 25 and 50 steps. Ops: Conv (dilations 1, 1, 2, 4, no padding), MatMul, Add, Unsqueeze, Relu, Mul, Sigmoid |
-| `experiments/w3_reference/go2_terrain_risk.json` | 8 windows cut from Isaac terrain: `height` [37][47], `cond`, `risk` [2][21][31], `corridor_mask` [21][31], `risk_ahead`, `threshold`, `slow_down` |
+| `export/models/go2_terrain_risk.onnx` | Inputs `height` [1, 1, H, W], `ice` [1, 1, H, W] (H, W dynamic) and `cond` [1, 5] = (vx, vy, wz, policy_v1, policy_v2). Output `risk` [1, 2, H − 16, W − 16], probabilities for 25 and 50 steps. Ops: Conv (dilations 1, 1, 2, 4, no padding), MatMul, Add, Unsqueeze, Relu, Mul, Sigmoid |
+| `experiments/w3_reference/go2_terrain_risk.json` | 8 windows cut from Isaac terrain with ice (4 of them show ice). Fields: `height` [37][47], `ice` [37][47], `cond`, `risk` [2][21][31], `risk_no_ice` (same window, ice all 0), `corridor_mask` [21][31], `risk_ahead`, `risk_ahead_ice_excess`, `trigger`, `threshold`, `slow_down` |
 
 ### 12.1 Egocentric window (yaml `terrain_risk.window`)
 - 47 × 37 vertical ray casts, as for the height scan (§5.6): the origin follows the base position and yaw, roll and pitch are ignored, and rays hit the terrain only.
 - Point (i, j) sits at (x0 + 0.1·i, y0 + 0.1·j) in the base yaw frame (Isaac axes: x forward, y left), with x0 = −1.3 and y0 = −1.8. It goes into `height[0, 0, j, i]`.
 - The value is the hit z in metres. Any constant offset is fine; subtract the centre height first for float precision.
+- `ice[0, 0, j, i]` comes from the same ray: 1.0 if the hit collider is **visible** ice, otherwise 0.0. Hidden ice and ground give 0. With `ice` all zero, the model behaves as a height-only model.
 - Output cell (i, j) is centred at (x0 + 0.1·(i + 8), y0 + 0.1·(j + 8)). The 31 × 21 output covers x ∈ [−0.5, 2.5] m and y ∈ [−1, 1] m ahead of the robot.
 - For the HUD, convert these Isaac-frame cell centres with `IsaacFrame`.
 - Cost: about 33M multiply-adds per window, a few milliseconds on CPU. Run it at the update period (0.2 s) with `Schedule`, not inside FixedUpdate.
 
 ### 12.2 Slowdown trigger (yaml `terrain_risk.slowdown`)
 Every 0.2 s:
-1. Take the max of risk channel 0 over the output cells whose centres lie within 0.2 m of the segment from the base along the (vx, vy) command, from 0 to 1.2 m ahead. If |(vx, vy)| ≤ 0.1, use the cells within 0.4 m of the base instead.
-2. If that max exceeds `threshold.<policy>`, apply the cautious gait for 1 s. The cautious gait scales |(vx, vy)| down to 0.3 m/s and clamps |wz| to 0.5 (`policies.v2.cautious_gait`).
-3. Use the player's original command for the risk, never the slowed one; otherwise the trigger oscillates.
+1. Compute the policy's trigger value per output cell from risk channel 0. The kind is set per policy in `trigger.<policy>`:
+   - `total` (v2): the risk with the real `ice` input;
+   - `ice_excess` (v1): that risk minus the risk with `ice` all zero. This needs a second ONNX run.
+2. Take the max over the output cells whose centres lie within 0.2 m of the segment from the base along the (vx, vy) command, from 0 to 1.2 m ahead, floored at 0. If |(vx, vy)| ≤ 0.1, use the cells within 0.4 m of the base instead.
+3. If the max exceeds `threshold.<policy>`, apply the cautious gait for 1 s. The cautious gait scales |(vx, vy)| down to 0.3 m/s and clamps |wz| to 0.5 (`policies.v2.cautious_gait`).
+4. Use the player's original command for the risk, never the slowed one; otherwise the trigger oscillates.
 
 The window only looks forward, so the trigger is valid for vx ≥ 0.3, |vy| ≤ 0.2 and |wz| ≤ 0.5. This rule and the surprisal alarm (§11) both lead to the cautious gait. Either can trigger it.
 
@@ -327,8 +337,22 @@ Run the same ONNX on a larger height grid, for example the level at 0.1 m (H and
 - Compute it when the level loads or changes, not every frame.
 
 ### 12.4 Verification
-1. **ONNX.** Feed each reference window's `height` and `cond` and compare `risk` (tolerance 1e-5).
-2. **Corridor and trigger.** From `cond[0:2]`, rebuild `corridor_mask`, then `risk_ahead` and `slow_down`. All must match exactly.
+1. **ONNX.** Feed each reference window's `height`, `ice` and `cond` and compare `risk`. Then feed the same window with `ice` all zero and compare `risk_no_ice`. Tolerance 1e-5.
+2. **Corridor and trigger.** From `cond[0:2]`, rebuild `corridor_mask`, then `risk_ahead`, `risk_ahead_ice_excess` and `slow_down`. All must match exactly.
 3. **Ray grid.** In a Unity scene with known geometry (for example a single 0.15 m step), check that the ray grid lands at the documented positions and order.
 
 The thresholds were set on Isaac Lab terrain. Player-built levels and Unity's slower gait are a distribution shift, so watch how often the trigger fires in Unity. If it fires far more than about 20–45 % of walking time, report it.
+
+### 12.5 Ice (phase 2; yaml `terrain_risk.ice`)
+**Physics.** Ice is flush with the ground and changes only friction.
+- Build it as colliders whose top surface is level with the ground around it.
+- Use a PhysicMaterial with static = dynamic friction 0.1 and frictionCombine **Multiply**. The effective contact friction is then foot friction × 0.1.
+- Isaac Lab emulates the same thing per foot: a foot over an ice cell gets its friction × 0.1.
+
+**Visible and hidden ice.** The two are physically identical.
+- **Visible ice** is drawn as ice (for example a ProBuilder block with an ice material). Tag or layer it so the ray grid can tell, and set `ice = 1` there.
+- **Hidden ice** is drawn like the ground around it, and `ice` stays 0. The vision model is blind to it by design. The world model's surprisal (§11) is what notices it: it fired within 1 s before about 45 % of hidden-ice falls in Isaac, against 11 % before other falls.
+
+**HUD.** For v1, visible ice clearly raises the predicted risk (about 8 ×). For v2 it raises it only 2–4 ×, because v2 handles ice well (it survives μ 0.1 90 % of the time), and the heat map barely changes.
+
+**Whole-level map** (§12.3): feed the level's ice grid together with the height grid.

@@ -110,3 +110,93 @@ def test_height_map_matches_isaac_scans():
     err = (h[:, 0].reshape(len(pos), -1) - expected)[ok].abs()
     assert float(err.median()) < 1e-3
     assert float(torch.quantile(err[:1_000_000], 0.95)) < 0.01
+
+
+# --- phase 2: ice ---------------------------------------------------------------------------------------------
+from types import SimpleNamespace  # noqa: E402
+
+from isaac.ice import HIDDEN, VISIBLE, IceSpec, grid_meta, make_ice_map, tile_centres  # noqa: E402
+from models.terrain_risk.patches import ice_channel  # noqa: E402
+
+GEN = SimpleNamespace(size=(8.0, 8.0), num_rows=3, num_cols=4, border_width=2.0)
+
+
+def test_ice_map_layout():
+    g = grid_meta(GEN)
+    assert (g["nx"], g["ny"], g["x_min"], g["y_min"]) == (1120, 1440, -14.0, -18.0)
+    ice, patches = make_ice_map(GEN, g, 3, IceSpec(hidden_frac=0.5))
+    again, _ = make_ice_map(GEN, g, 3, IceSpec(hidden_frac=0.5))
+    assert (ice == again).all() and set(np.unique(ice)) == {0, VISIBLE, HIDDEN}
+    assert any(p["hidden"] for p in patches) and not all(p["hidden"] for p in patches)
+    xs = g["x_min"] + (np.arange(g["nx"]) + 0.5) * g["res"]
+    ys = g["y_min"] + (np.arange(g["ny"]) + 0.5) * g["res"]
+    on_tiles = (np.abs(xs) <= 12)[:, None] & (np.abs(ys) <= 16)[None, :]
+    assert not ice[~on_tiles].any(), "ice on the border"
+    for ox, oy in tile_centres(GEN).reshape(-1, 2):
+        near = (xs[:, None] - ox) ** 2 + (ys[None, :] - oy) ** 2 <= IceSpec().spawn_clear ** 2
+        assert not ice[near].any(), "ice at a spawn point"
+    # hiding patches changes only what is drawn, not where the ice is
+    shown, _ = make_ice_map(GEN, g, 3, IceSpec(hidden_frac=0.0))
+    assert not (shown == HIDDEN).any() and ((shown > 0) == (ice > 0)).all()
+    # a patch centre (away from spawn points) is ice
+    p = next(p for p in patches if min(math.dist(p["centre"], c) for c in tile_centres(GEN).reshape(-1, 2)) > 1.5)
+    i, j = int((p["centre"][0] - g["x_min"]) / g["res"]), int((p["centre"][1] - g["y_min"]) / g["res"])
+    assert ice[i, j] > 0
+
+
+def test_ice_channel_modes():
+    codes = torch.tensor([0.0, 1.0, 2.0])
+    assert ice_channel(codes, "map").tolist() == [0, 1, 0]
+    assert ice_channel(codes, "all").tolist() == [0, 1, 1]
+    assert ice_channel(codes, "none").tolist() == [0, 0, 0]
+
+
+def test_patch_equals_window_cell_with_ice():
+    torch.manual_seed(0)
+    rng = np.random.default_rng(1)
+    res, n = 0.025, 400
+    meta = {"res": res, "x_min": -5.0, "y_min": -5.0}
+    hm = HeightMap((rng.normal(0, 0.05, (n, n)).cumsum(0).cumsum(1) * 0.01).astype(np.float32), meta, device="cpu")
+    codes = np.kron(rng.integers(0, 3, (n // 20, n // 20)), np.ones((20, 20))).astype(np.uint8)  # 0.5 m blocks
+    im = HeightMap(codes, meta, device="cpu")
+    net = RiskNet(n_ice=1).eval()
+    cx, cy, yaw = torch.tensor([0.3]), torch.tensor([-0.2]), torch.tensor([0.7])
+    cond = cond_vector(torch.tensor([[0.6, 0.1, -0.2]]), torch.tensor([1]))
+    with torch.no_grad():
+        wi = ice_channel(window(im, LAY, cx, cy, yaw))
+        assert 0 < float(wi.mean()) < 1
+        full = net(window(hm, LAY, cx, cy, yaw), cond, wi)[0]
+        assert not torch.allclose(full, net(window(hm, LAY, cx, cy, yaw), cond)[0]), "ice channel has no effect"
+        for i, j in [(0, 0), (8, 10), (30, 20), (12, 3)]:
+            lx, ly = LAY.x0 + LAY.res * (i + LAY.half), LAY.y0 + LAY.res * (j + LAY.half)
+            px = cx + torch.cos(yaw) * lx - torch.sin(yaw) * ly
+            py = cy + torch.sin(yaw) * lx + torch.cos(yaw) * ly
+            one = net(patch(hm, LAY, px, py, yaw), cond, ice_channel(patch(im, LAY, px, py, yaw)))[0, :, 0, 0]
+            assert torch.allclose(one, full[:, j, i], atol=1e-6), (i, j)
+        h, ice = torch.randn(3, 1, 25, 30) * 0.1, (torch.rand(3, 1, 25, 30) < 0.3).float()
+        c = torch.randn(3, 5)
+        assert torch.allclose(net(h, c, ice), net(h + 1.7, c, ice), atol=1e-6)
+
+
+ICE_SMOKE = REPO_ROOT / "logs" / "wm_data" / "smoke_ice"
+
+
+def test_ice_friction_follows_the_map():
+    """Recorded foot friction = episode friction * ice.friction exactly where the collector put a foot on ice, and
+    every foot standing over an ice cell was put on ice."""
+    if not (ICE_SMOKE / "ice_mask.npy").exists():
+        pytest.skip("no smoke ice data; run isaac/collect_wm_data.py --split ice_train --steps 150 --out_dir logs/wm_data/smoke_ice")
+    meta = json.loads((ICE_SMOKE / "meta.json").read_text())
+    T = meta["steps_written"]
+    mu = np.load(ICE_SMOKE / "foot_mu.npy")[:T].astype(np.float32)
+    code = np.load(ICE_SMOKE / "foot_ice.npy")[:T]
+    fp = np.load(ICE_SMOKE / "feet_pos.npy")[:T]
+    on = code > 0
+    base = np.where(on, -1.0, mu).max(axis=2, keepdims=True)  # a non-ice foot's friction in the same frame
+    m = on & (base > 0)
+    assert m.sum() > 1000
+    ratio = mu[m] / np.broadcast_to(base, mu.shape)[m]
+    assert np.abs(ratio - load_interface()["terrain_risk"]["ice"]["friction"]).max() < 2e-3  # float16 storage
+    im = HeightMap.ice_from_split(ICE_SMOKE, device="cpu")
+    now = im.lookup(torch.from_numpy(fp[..., 0]), torch.from_numpy(fp[..., 1])).numpy()
+    assert (code[now > 0] == now[now > 0]).all()

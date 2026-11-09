@@ -105,7 +105,7 @@ Risk at 0.5 s over a 24 × 16 m corner of the test terrain, heading +x, v = 0.6 
 - **Fall rate per time vs per distance.** The "20 s success" column rewards walking less. Falls per 100 m is the fair comparison.
 
 ## Open points
-- **Visible vs hidden ice (phase 2):** add low-friction ice blocks with a material channel. `feet_pos` is already recorded for this.
+- **Visible vs hidden ice (phase 2):** done; see `experiments/w6_ice_risk/`. The deployed model, `go2_terrain_risk.onnx`, is now the ice model, and its slowdown rule replaced the thresholds above: v2 total 0.0125, v1 ice excess 0.00799.
 - **Unity:**
   - Calibration: the thresholds were set in Isaac Lab, and player-built levels and Unity's slower gait are a distribution shift, so recheck there.
   - Window size: the egocentric window only covers forward commands.

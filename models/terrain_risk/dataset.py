@@ -16,7 +16,7 @@ import torch
 
 from models.world_model.dataset import fall_labels, quat_yaw
 
-from .patches import HeightMap, load_risk_layout, patch
+from .patches import HeightMap, ice_channel, load_risk_layout, patch
 
 
 class RiskFrames:
@@ -65,6 +65,7 @@ class RiskFrames:
         self.val_tiles = val_tiles
         self.n_frames = len(n_idx)
         self.maps = [HeightMap.from_split(d, device=device)]
+        self.ice_maps = [HeightMap.ice_from_split(d, device=device)]
         self.map_id = torch.zeros(self.n_frames, dtype=torch.long, device=dev)
         self.dirs = [str(d)]
         self.parts_meta = [self.meta]
@@ -80,6 +81,7 @@ class RiskFrames:
             setattr(out, name, torch.cat([getattr(p_, name) for p_ in parts]))
         out.map_id = torch.cat([torch.full((p_.n_frames,), k, dtype=torch.long, device=out.x.device) for k, p_ in enumerate(parts)])
         out.maps = [p_.maps[0] for p_ in parts]
+        out.ice_maps = [p_.ice_maps[0] for p_ in parts]
         out.dirs = [p_.dirs[0] for p_ in parts]
         out.parts_meta = [p_.meta for p_ in parts]
         out.val_tiles = np.stack([p_.val_tiles for p_ in parts])
@@ -95,6 +97,17 @@ class RiskFrames:
             if len(sel):
                 i = idx[sel]
                 out[sel] = patch(hm, lay, self.x[i], self.y[i], self.yaw[i])
+        return out
+
+    def ice_patches(self, lay, idx: torch.Tensor, mode: str = "map") -> torch.Tensor:
+        """Ice-channel patches [B, 1, rf, rf] (models.terrain_risk.patches.ice_channel) for frames idx."""
+        out = torch.empty(len(idx), 1, lay.rf, lay.rf, device=self.x.device)
+        mid = self.map_id[idx]
+        for k, im in enumerate(self.ice_maps):
+            sel = (mid == k).nonzero().squeeze(1)
+            if len(sel):
+                i = idx[sel]
+                out[sel] = ice_channel(patch(im, lay, self.x[i], self.y[i], self.yaw[i]), mode)
         return out
 
     def tile_keys(self) -> np.ndarray:

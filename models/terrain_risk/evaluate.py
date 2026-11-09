@@ -29,7 +29,7 @@ from isaac.interface import load_interface
 
 from .dataset import RiskFrames
 from .model import RiskNet, load_risk_model
-from .patches import HeightMap, cond_vector, load_risk_layout, patch, window
+from .patches import HeightMap, cond_vector, ice_channel, load_risk_layout, patch, window
 from .train import batch_inputs
 
 _SLOW = load_interface()["terrain_risk"]["slowdown"]
@@ -55,11 +55,20 @@ def corridor_mask(cmd: torch.Tensor, lay) -> torch.Tensor:
 
 
 @torch.no_grad()
-def risk_ahead(model: RiskNet, hm: HeightMap, lay, x, y, yaw, cmd, policy, horizon: int = 0, chunk: int = 512) -> torch.Tensor:
+def risk_ahead(model: RiskNet, hm: HeightMap, lay, x, y, yaw, cmd, policy, horizon: int = 0, chunk: int = 512,
+               ice_map: HeightMap | None = None, ice_mode: str = "map", ice_excess: bool = False) -> torch.Tensor:
+    """Max of the risk map over the command corridor; ice_map / ice_mode give the ice channel (ice models).
+    ice_excess: max over the corridor of (risk with the ice shown - risk with no ice shown), the risk the ice adds."""
     out = []
     for s in range(0, len(x), chunk):
         e = s + chunk
-        r = model(window(hm, lay, x[s:e], y[s:e], yaw[s:e]), cond_vector(cmd[s:e], policy[s:e]))[:, horizon]
+        ice = None
+        if ice_map is not None and model.has_ice:
+            ice = ice_channel(window(ice_map, lay, x[s:e], y[s:e], yaw[s:e]), ice_mode)
+        h, cond = window(hm, lay, x[s:e], y[s:e], yaw[s:e]), cond_vector(cmd[s:e], policy[s:e])
+        r = model(h, cond, ice)[:, horizon]
+        if ice_excess:
+            r = r - model(h, cond, None)[:, horizon] if ice is not None else torch.zeros_like(r)
         m = corridor_mask(cmd[s:e], lay)
         out.append(torch.where(m, r, torch.zeros_like(r)).amax(dim=(1, 2)))
     return torch.cat(out)
@@ -165,8 +174,8 @@ def main():
     probs = []
     with torch.no_grad():
         for c in torch.split(idx, 8192):
-            h, cond = batch_inputs(te, lay, c)
-            probs.append(model(h, cond)[:, :, 0, 0])
+            h, ice, cond = batch_inputs(te, lay, c)
+            probs.append(model(h, cond, ice)[:, :, 0, 0])
     probs = torch.cat(probs).cpu().numpy()
     base = {k: v.cpu().numpy() for k, v in baselines(te, hm_te, lay, idx).items()}
     tr = RiskFrames.merge(args.train, device=dev)

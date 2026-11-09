@@ -6,6 +6,9 @@ kernels are forced to sum to zero, which makes the output exactly invariant to a
 height reference needed). The condition (command + policy one-hot) enters as a bias of the first layer, which
 under valid convolutions is the same as constant input channels. Platt parameters (scale, bias per horizon)
 correct the probabilities for the positive oversampling used in training.
+
+Phase 2 (n_ice=1): a second input channel "ice" (1 where a grid point is on visible ice, else 0) with its own
+first-layer kernel (no zero-sum constraint, no bias), added to the height convolution. ice=None means no ice.
 """
 
 from __future__ import annotations
@@ -18,10 +21,12 @@ HEIGHT_SCALE = 10.0  # metres -> decimetres before the first layer (conditioning
 
 
 class RiskNet(nn.Module):
-    def __init__(self, width: int = 32, n_cond: int = 5, n_out: int = 2, dilations: tuple[int, ...] = (1, 1, 2, 4)):
+    def __init__(self, width: int = 32, n_cond: int = 5, n_out: int = 2, dilations: tuple[int, ...] = (1, 1, 2, 4),
+                 n_ice: int = 0):
         super().__init__()
-        self.config = dict(width=width, n_cond=n_cond, n_out=n_out, dilations=list(dilations))
+        self.config = dict(width=width, n_cond=n_cond, n_out=n_out, dilations=list(dilations), n_ice=n_ice)
         self.conv1 = nn.Conv2d(1, width, 3, dilation=dilations[0])
+        self.conv_ice = nn.Conv2d(1, width, 3, dilation=dilations[0], bias=False) if n_ice else None
         self.cond = nn.Linear(n_cond, width, bias=False)
         self.convs = nn.ModuleList(nn.Conv2d(width, width, 3, dilation=d) for d in dilations[1:])
         self.head = nn.Conv2d(width, n_out, 1)
@@ -33,17 +38,24 @@ class RiskNet(nn.Module):
         w = self.conv1.weight
         return w - w.mean(dim=(2, 3), keepdim=True)
 
-    def logits(self, height: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
-        """Uncalibrated logits [B, n_out, H - rf + 1, W - rf + 1] for height [B, 1, H, W], cond [B, n_cond]."""
+    @property
+    def has_ice(self) -> bool:
+        return self.conv_ice is not None
+
+    def logits(self, height: torch.Tensor, cond: torch.Tensor, ice: torch.Tensor | None = None) -> torch.Tensor:
+        """Uncalibrated logits [B, n_out, H - rf + 1, W - rf + 1] for height [B, 1, H, W], cond [B, n_cond] and
+        (ice models) ice [B, 1, H, W]."""
         x = F.conv2d(height * HEIGHT_SCALE, self.zero_sum_weight(), self.conv1.bias, dilation=self.conv1.dilation)
+        if self.conv_ice is not None and ice is not None:
+            x = x + self.conv_ice(ice)
         x = F.relu(x + self.cond(cond)[:, :, None, None])
         for conv in self.convs:
             x = F.relu(conv(x))
         return self.head(x)
 
-    def forward(self, height: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+    def forward(self, height: torch.Tensor, cond: torch.Tensor, ice: torch.Tensor | None = None) -> torch.Tensor:
         """Calibrated fall probabilities [B, n_out, H - rf + 1, W - rf + 1]."""
-        z = self.logits(height, cond)
+        z = self.logits(height, cond, ice)
         return torch.sigmoid(z * self.platt_scale[None, :, None, None] + self.platt_bias[None, :, None, None])
 
 

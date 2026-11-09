@@ -31,21 +31,25 @@ from .model import RiskNet
 from .patches import cond_vector, load_risk_layout
 
 
-def batch_inputs(fr: RiskFrames, lay, idx: torch.Tensor, mirror: torch.Tensor | None = None):
+def batch_inputs(fr: RiskFrames, lay, idx: torch.Tensor, mirror: torch.Tensor | None = None, ice_mode: str = "map"):
+    """(height [B, 1, rf, rf], ice [B, 1, rf, rf], cond [B, 5]) for frames idx, optionally mirrored left-right."""
     h = fr.patches(lay, idx)
+    ice = fr.ice_patches(lay, idx, ice_mode)
     cmd = fr.cmd[idx].clone()
     if mirror is not None:
-        h = torch.where(mirror[:, None, None, None], h.flip(2), h)  # rows are y: flip y -> -y
+        m4 = mirror[:, None, None, None]
+        h = torch.where(m4, h.flip(2), h)  # rows are y: flip y -> -y
+        ice = torch.where(m4, ice.flip(2), ice)
         cmd[:, 1:] = torch.where(mirror[:, None], -cmd[:, 1:], cmd[:, 1:])  # vy, wz change sign
-    return h, cond_vector(cmd, fr.policy[idx])
+    return h, ice, cond_vector(cmd, fr.policy[idx])
 
 
 @torch.no_grad()
-def predict_logits(model: RiskNet, fr: RiskFrames, lay, idx: torch.Tensor, chunk: int = 8192) -> torch.Tensor:
+def predict_logits(model: RiskNet, fr: RiskFrames, lay, idx: torch.Tensor, chunk: int = 8192, ice_mode: str = "map") -> torch.Tensor:
     out = []
     for c in torch.split(idx, chunk):
-        h, cond = batch_inputs(fr, lay, c)
-        out.append(model.logits(h, cond)[:, :, 0, 0])
+        h, ice, cond = batch_inputs(fr, lay, c, ice_mode=ice_mode)
+        out.append(model.logits(h, cond, ice)[:, :, 0, 0])
     return torch.cat(out)
 
 
@@ -89,6 +93,7 @@ def main():
     p.add_argument("--weight_decay", type=float, default=1e-3)
     p.add_argument("--pos_frac", type=float, default=0.1)
     p.add_argument("--width", type=int, default=32)
+    p.add_argument("--no_ice", action="store_true", help="height-only model (phase 1)")
     p.add_argument("--val_every", type=int, default=250)
     p.add_argument("--val_samples", type=int, default=300_000)
     p.add_argument("--seed", type=int, default=0)
@@ -107,7 +112,7 @@ def main():
     va_sub = va_idx[torch.randperm(len(va_idx), device=dev, generator=g)[: args.val_samples]]
     print(f"[risk] {fr.stats()} | train positives (h50) {len(pos_idx)} | loaded in {time.time() - t0:.0f} s", flush=True)
 
-    model = RiskNet(width=args.width, n_cond=len(lay.cond), n_out=len(lay.horizons)).to(dev)
+    model = RiskNet(width=args.width, n_cond=len(lay.cond), n_out=len(lay.horizons), n_ice=0 if args.no_ice else 1).to(dev)
     assert model.rf == lay.rf, (model.rf, lay.rf)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=args.iters, pct_start=0.05)
@@ -121,8 +126,8 @@ def main():
         idx = torch.cat([pos_idx[torch.randint(len(pos_idx), (n_pos,), device=dev, generator=g)],
                          tr_idx[torch.randint(len(tr_idx), (args.batch - n_pos,), device=dev, generator=g)]])
         mirror = torch.rand(len(idx), device=dev, generator=g) < 0.5
-        h, cond = batch_inputs(fr, lay, idx, mirror)
-        z = model.logits(h, cond)[:, :, 0, 0]
+        h, ice, cond = batch_inputs(fr, lay, idx, mirror)
+        z = model.logits(h, cond, ice)[:, :, 0, 0]
         k = fr.known[idx]
         loss = (F.binary_cross_entropy_with_logits(z, fr.label[idx].float(), reduction="none") * k).sum() / k.sum()
         opt.zero_grad(set_to_none=True)
