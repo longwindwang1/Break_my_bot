@@ -1,0 +1,29 @@
+## P20k (w_pred 25, 20k iterations)
+encoder sensitivity per window frame (oldest..newest): [0.111 0.064 0.825]
+  base_lin_vel       share 0.713  dims 3
+  base_ang_vel       share 0.019  dims 3
+  projected_gravity  share 0.052  dims 3
+  joint_pos          share 0.185  dims 12
+  joint_vel          share 0.031  dims 12
+none       mean r^2 before 0.55 after 0.58  dims with ratio > 2: 0/128  max ratio 1.7
+mu_0.3     mean r^2 before 0.60 after 0.72  dims with ratio > 2: 0/128  max ratio 1.3
+mu_0.1     mean r^2 before 0.54 after 1.38  dims with ratio > 2: 128/128  max ratio 3.5
+mu_0.05    mean r^2 before 0.56 after 2.03  dims with ratio > 2: 128/128  max ratio 7.0
+foot_0.05  mean r^2 before 0.51 after 1.10  dims with ratio > 2: 109/128  max ratio 2.8
+push_0.5   mean r^2 before 0.63 after 0.57  dims with ratio > 2: 0/128  max ratio 1.0
+push_1.0   mean r^2 before 0.57 after 0.51  dims with ratio > 2: 0/128  max ratio 1.0
+
+## P20k_wp5 (w_pred 5, 20k iterations)
+encoder sensitivity per window frame (oldest..newest): [0.111 0.096 0.793]
+  base_lin_vel       share 0.534  dims 3
+  base_ang_vel       share 0.038  dims 3
+  projected_gravity  share 0.085  dims 3
+  joint_pos          share 0.285  dims 12
+  joint_vel          share 0.058  dims 12
+none       mean r^2 before 0.55 after 0.57  dims with ratio > 2: 0/128  max ratio 1.3
+mu_0.3     mean r^2 before 0.61 after 0.71  dims with ratio > 2: 0/128  max ratio 1.3
+mu_0.1     mean r^2 before 0.56 after 1.28  dims with ratio > 2: 125/128  max ratio 2.8
+mu_0.05    mean r^2 before 0.56 after 1.84  dims with ratio > 2: 128/128  max ratio 5.3
+foot_0.05  mean r^2 before 0.52 after 1.02  dims with ratio > 2: 46/128  max ratio 2.3
+push_0.5   mean r^2 before 0.62 after 0.58  dims with ratio > 2: 0/128  max ratio 1.1
+push_1.0   mean r^2 before 0.56 after 0.51  dims with ratio > 2: 0/128  max ratio 1.0

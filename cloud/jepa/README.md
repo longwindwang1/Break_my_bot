@@ -63,7 +63,7 @@ docker run --gpus all --shm-size 8g -e PARALLEL=3 -v "$PWD":/work -w /work bmb-w
 
 | stage | jobs | notes |
 |---|---|---|
-| `sweep` | 12 latent models, seed 0, then a fall-head refit each: vicreg × d {64, 256} × L {1, 3} × prediction weight {25, 5}, and ema × d × L | 20 epochs each, as the ensemble |
+| `sweep` | 12 latent models, seed 0, then a fall-head refit each: vicreg × d {64, 256} × L {1, 3} × prediction weight {25, 100}, and ema × d × L | 20 epochs each, as the ensemble |
 | `select` | detector grid per sweep model on the selection splits | |
 | `pick` | best configuration by the W5 criterion | key events within 2 s, false alarms ≤ 2 × target → `experiments/w7_jepa_wm/sweep_pick.json` |
 | `finals` | B seeds 1–2 (winner), C seeds 0–2 (reconstruction objective, winner's d and L), A seeds 1–2 (ensemble retrained) | |
@@ -73,7 +73,7 @@ docker run --gpus all --shm-size 8g -e PARALLEL=3 -v "$PWD":/work -w /work bmb-w
 
 - **Resuming.** A stage skips work whose output exists, so after an interruption just run the same command again.
 - **Logs.** Per-job logs are in `experiments/w7_jepa_wm/cloud_logs/`.
-- **Smoke run.** `EPOCHS=0.05` runs every stage on about 5 % of the training.
+- **Smoke run.** For example `SWEEP_CONFIGS="vicreg 64 1 25;ema 64 1 25" EPOCHS=0.005` runs every stage on a tiny sweep, in about 30 min with `PARALLEL=1`; it was checked this way on the laptop. Set `OUT=/tmp/... RUNS=/tmp/...` to keep its runs apart.
 
 ## 4. Bring back
 ```

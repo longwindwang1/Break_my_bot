@@ -1,0 +1,40 @@
+{
+ "data": "logs/wm_data/w4_train",
+ "frames": 400000,
+ "frames_any_icy": 0.2702849805355072,
+ "single_icy_frames": 26919,
+ "A": {
+  "trunk": {
+   "mu_min/linear": 0.093075692653656,
+   "mu_min/mlp": 0.09994614124298096,
+   "any_icy/linear": 0.6870941115318302,
+   "any_icy/mlp": 0.7289609781440202,
+   "base_lin_vel/linear": 0.9918417930603027,
+   "base_lin_vel/mlp": 0.9974019527435303,
+   "icy_foot/linear": 0.34826022386550903,
+   "icy_foot/mlp": 0.34418925642967224
+  }
+ },
+ "P20k": {
+  "z": {
+   "mu_min/linear": 0.028216660022735596,
+   "mu_min/mlp": 0.03813183307647705,
+   "any_icy/linear": 0.6135883216769265,
+   "any_icy/mlp": 0.6808386722457023,
+   "base_lin_vel/linear": 0.947017252445221,
+   "base_lin_vel/mlp": 0.9813329577445984,
+   "icy_foot/linear": 0.2797449827194214,
+   "icy_foot/mlp": 0.30524617433547974
+  },
+  "trunk": {
+   "mu_min/linear": 0.03981250524520874,
+   "mu_min/mlp": 0.05669605731964111,
+   "any_icy/linear": 0.6351002304604799,
+   "any_icy/mlp": 0.6828093420929143,
+   "base_lin_vel/linear": 0.925929069519043,
+   "base_lin_vel/mlp": 0.9739046096801758,
+   "icy_foot/linear": 0.2745986580848694,
+   "icy_foot/mlp": 0.2990244925022125
+  }
+ }
+}

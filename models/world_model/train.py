@@ -117,6 +117,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--data", required=True, help="train split dir (logs/wm_data/...)")
     p.add_argument("--name", default="wm")
+    p.add_argument("--out_root", default=str(REPO_ROOT / "logs" / "wm"), help="run dirs go to <out_root>/<time>_<name>")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--epochs", type=float, default=20.0, help="passes over the training windows (per member)")
     p.add_argument("--max_iters", type=int, default=None, help="cap on iterations (smoke tests)")
@@ -136,7 +137,7 @@ def main():
     np.random.seed(args.seed)
     torch.backends.cuda.matmul.allow_tf32 = True
     dev = args.device
-    run_dir = REPO_ROOT / "logs" / "wm" / f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{args.name}"
+    run_dir = Path(args.out_root) / f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{args.name}"
     run_dir.mkdir(parents=True, exist_ok=True)
     itf = load_interface()
 

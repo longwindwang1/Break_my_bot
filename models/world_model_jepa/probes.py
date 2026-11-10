@@ -1,8 +1,10 @@
 """Probes on frozen world-model representations: does the representation carry friction / ice information?
 
-Data: the held-out envs (val_envs) of the full-randomization split w4_train (foot mu re-drawn every 4-8 s, half of
-the changes on a single foot; pushes). Steps with episode step >= 25; probe-train envs = even positions of the
-val envs, probe-test = odd positions. Representations (all at step t, from the model's own inputs at t):
+Data: the full-randomization split w4_train (foot mu re-drawn every 4-8 s, half of the changes on a single foot;
+pushes), all envs: no probed representation was trained on it (dynamics: w4_train_nominal; only the fall heads,
+which are not probed, saw w4_train). Steps with episode step >= 25; probe-train = even envs, probe-test = odd envs
+(mu is constant for seconds per env, so a split by env is needed to avoid memorizing envs).
+Representations (all at step t, from the model's own inputs at t):
   ensemble  trunk: last trunk layer, mean over members (512)
   latent    z: target-encoder latent of the window ending at t (d); trunk: predictor trunk, mean over members (512)
 Targets: min foot mu (R^2), any foot mu < 0.3 (AUROC), which foot is the icy one when exactly one is (accuracy,
@@ -91,11 +93,13 @@ def main():
     p.add_argument("--data", default="logs/wm_data/w4_train")
     p.add_argument("--out", required=True)
     p.add_argument("--samples", type=int, default=400_000)
+    p.add_argument("--val_envs_only", action="store_true", help="only the split's val envs (less memory, fewer envs)")
     p.add_argument("--device", default="cuda")
     args = p.parse_args()
     dev = args.device
     meta = json.loads((Path(args.data) / "meta.json").read_text())
-    d = WMData(args.data, device=dev, envs=val_envs(meta["num_envs"]), extra=True)
+    envs = val_envs(meta["num_envs"]) if args.val_envs_only else None
+    d = WMData(args.data, device=dev, envs=envs, extra=True)
     sel = (d.episode_step >= 25) & (d.trans_ok)
     n, t = sel.nonzero(as_tuple=True)
     g = torch.Generator(device=dev).manual_seed(0)
@@ -107,14 +111,22 @@ def main():
                "base_lin_vel": ("reg", d.state(n, t)[:, 0:3])}
     one = icy.sum(1) == 1
     targets["icy_foot"] = ("cls", icy.float().argmax(1), one)
-    test = (n % 2 == 1)
+    test = torch.from_numpy(d.env_ids % 2 == 1).to(dev)[n]  # by original env index
     res = {"data": args.data, "frames": int(len(n)), "frames_any_icy": float(icy.any(1).float().mean()), "single_icy_frames": int(one.sum())}
+    # representations first (kept on the CPU), then free the split, then fit the probes: fits in 8 GB
+    reps_all = {}
     for spec in args.model:
         name, _, rest = spec.partition("=")
         kind, _, ckpt = rest.partition(":")
         net = load_ensemble(ckpt, dev)[0] if kind == "ensemble" else load_latent(ckpt, dev)[0]
-        reps = representations(kind, net, d, n, t)
-        for rname, X in reps.items():
+        reps_all[name] = {k: v.cpu() for k, v in representations(kind, net, d, n, t).items()}
+        del net
+        torch.cuda.empty_cache()
+    del d
+    torch.cuda.empty_cache()
+    for name, reps in reps_all.items():
+        for rname, Xc in reps.items():
+            X = Xc.to(dev)
             for tname, tgt in targets.items():
                 task, y = tgt[0], tgt[1]
                 m = tgt[2] if len(tgt) > 2 else torch.ones_like(test)
@@ -130,8 +142,8 @@ def main():
                         v = float((o.argmax(1) == yt).float().mean())
                     res.setdefault(name, {}).setdefault(rname, {})[f"{tname}/{pk}"] = v
                     print(f"[probe] {name} {rname:5s} {tname:12s} {pk:6s} {v:.3f}", flush=True)
-        del net, reps
-        torch.cuda.empty_cache()
+            del X
+            torch.cuda.empty_cache()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "probes.json").write_text(json.dumps(res, indent=1))

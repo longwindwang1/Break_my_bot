@@ -44,6 +44,14 @@ and adapt online.
       - v1 now slows only for the risk that visible ice adds (`trigger: ice_excess`): its ice falls dropped by 32 % and
         all falls by 16 %, but only when most of the ice is visible.
   - **Open.** Unity side (`docs/unity_handoff.md` §12, §12.5).
+- In progress: second world model (JEPA-style latent dynamics) vs the W4–5 ensemble (`experiments/w7_jepa_wm/`).
+  - **Code done:** `models/world_model_jepa/` (model, train, fall-head refit, streaming scores, compare, probes); tests pass;
+    the generalized `models/world_model/evaluate.py` re-calibrates the deployed ensemble identically.
+  - **Protocol:** detector settings and the 12-config sweep are chosen on `w4_clean` / `w4_events` / `w4_events_pits` only;
+    everything is reported on unseen splits (`w7_events_test`, `w7_events_pits_test`, `w6_ice_test`, `w6_geo_test`).
+    Controls: A_cov (ensemble + residual whitening), C (latent model with a reconstruction objective); 3 seeds each.
+  - **Open:** training runs on a rented GPU (`cloud/jepa/README.md`, `cloud/jepa/run_all.sh`), then the report.
+    No yaml / ONNX change until the results are in.
 - Earlier: W3 smoke test, both sides. Python: `configs/robot_interface.yaml`, ONNX export, parity tests.
   Unity (`experiments/w3_unity/`): flat, rough and v2 walk in Unity physics; verification levels 1–4 of
   `docs/unity_handoff.md` §8 pass (ONNX ≤ 2.2e-6, obs ≤ 3.6e-7, kinematics ≤ 0.006 mm); 44 EditMode tests.
@@ -79,10 +87,12 @@ isaac/        launchers (train.py/play.py), our tasks (bmb_tasks/), training wra
               eval_policy.py, interface.py (yaml loader, env.yaml checker, apply_to_env_cfg)
 models/       world_model/ (PyTorch): dataset (masks, labels), ensemble, train, surprisal + CUSUM, evaluate/calibrate;
               terrain_risk/: height / ice patches, fully convolutional risk net, train, evaluate (+ evaluate_ice)
+              world_model_jepa/: second world model (latent dynamics, JEPA objective), compare vs the ensemble, probes
 export/       ONNX export + parity tests; deployable models in export/models/ (tracked for the Unity machine)
 unity/        Unity 6000.3.8f1 project: Assets/Scripts/{Runtime,Editor,Tests/EditMode}, Assets/Robots (URDF, Go2.prefab),
               Assets/Scenes (W3_Flat, W3_Rough)
 configs/      shared configs, incl. robot_interface.yaml
+cloud/        rented-GPU jobs (plain PyTorch, Docker): cloud/jepa/ = the W7 world-model comparison
 experiments/  results, plots, notes per experiment
 docs/         design notes
 ```
@@ -184,6 +194,13 @@ Run from the repo root. Isaac Lab writes checkpoints and `params/{env,agent}.yam
   - phase 2 (ice): data `collect_wm_data.py --split ice_train|ice_train2|ice_train3|ice_test` (adds `ice_mask.npy`, `foot_ice.npy`);
     train on the 3 geo + 3 ice splits; evaluate with `... -m models.terrain_risk.evaluate_ice --run ... --phase1_run ... --test logs/wm_data/w6_ice_test ...`;
   - export + Unity reference: `... export/export_risk_onnx.py --run logs/terrain_risk/<run> --reference_split logs/wm_data/w6_ice_test`.
+- Second world model (W7, `experiments/w7_jepa_wm/`; all stages in `cloud/jepa/run_all.sh`, setup in `cloud/jepa/README.md`):
+  - report-only data: `collect_wm_data.py --split events_test|events_pits_test --out_dir logs/wm_data/w7_<split>`;
+  - train: `... -m models.world_model_jepa.train --data logs/wm_data/w4_train_nominal --name <name> --reg vicreg|ema|recon --d 128 --L 3`
+    (~1.5–2.3 h per 20-epoch run on the laptop), then `... -m models.world_model_jepa.refit_heads --run logs/wm/<run> --data logs/wm_data/w4_train`;
+  - compare: `... -m models.world_model_jepa.compare --stage select report --model A=ensemble:<ckpt> --model B=latent:<ckpt> --out experiments/w7_jepa_wm`,
+    then `--stage summary --baseline A`; probes: `... -m models.world_model_jepa.probes --model ...`;
+  - tests: `... -m pytest models/world_model_jepa`.
 - Export ONNX: `~/miniforge3/envs/env_isaaclab/bin/python export/export_onnx.py --run <log_dir> --variant flat|rough|v2 [--checkpoint model_N.pt] [--opset 15]`
   → `export/models/go2_<variant>.onnx` (input `obs` [1,48|235|1360], output `actions` [1,12]; v2 exports the student;
   opset 18 default, 15 for older Unity Inference Engine versions)

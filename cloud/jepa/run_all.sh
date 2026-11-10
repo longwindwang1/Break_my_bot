@@ -7,7 +7,7 @@
 #
 # Stages
 #   sweep    12 latent models, seed 0, + fall-head refit: vicreg x latent dim {64, 256} x window L {1, 3} x
-#            prediction weight {25, 5}; ema x d {64, 256} x L {1, 3}
+#            prediction weight {25, 100}; ema x d {64, 256} x L {1, 3}
 #   select   detector grid of every sweep model on the selection splits (w4_clean, w4_events, w4_events_pits)
 #   pick     best sweep configuration by the W5 criterion -> $OUT/sweep_pick.json
 #   finals   B seeds 1-2 (winner config), C seeds 0-2 (reconstruction objective, winner d and L),
@@ -24,13 +24,14 @@ OUT=${OUT:-experiments/w7_jepa_wm}
 PARALLEL=${PARALLEL:-1}       # concurrent jobs; each holds a ~4 GB split on the GPU plus ~3 GB (d 256): 32 GB -> 3
 EPOCHS=${EPOCHS:-20}          # as the W4 ensemble
 A_RUN=${A_RUN:-logs/wm/2026-11-07_22-45-27_w4_wm_nominal}
+RUNS=${RUNS:-logs/wm}         # where the new run directories go
 TRAIN=$DATA/w4_train_nominal  # normal physics only (dynamics); ice and pushes must stay surprising
 FALL=$DATA/w4_train           # full randomization (fall heads)
 LOGS=$OUT/cloud_logs
 mkdir -p "$LOGS" "$OUT/models"
 STAGES=${*:-sweep select pick finals}
 
-rundir() { ls -d logs/wm/*_"$1" 2>/dev/null | tail -1; }
+rundir() { ls -d "$RUNS"/*_"$1" 2>/dev/null | tail -1 || true; }
 has() { for s in $STAGES; do [ "$s" = "$1" ] && return 0; done; return 1; }
 run_jobs() {  # stdin: one shell command per line; runs $PARALLEL at a time, fails the stage if any job failed
   local cmds=() line running=0 fail=0
@@ -49,16 +50,16 @@ latent_job() {  # name reg d L w_pred seed
   local name=$1 reg=$2 d=$3 L=$4 wp=$5 seed=$6
   local r; r=$(rundir "$name")
   if [ -n "$r" ] && [ -f "$r/model_fall.pt" ]; then return; fi
-  echo "$PY -m models.world_model_jepa.train --data $TRAIN --name $name --reg $reg --d $d --L $L --w_pred $wp --seed $seed --epochs $EPOCHS > $LOGS/$name.log 2>&1 && \
-$PY -m models.world_model_jepa.refit_heads --run \$(ls -d logs/wm/*_$name | tail -1) --data $FALL >> $LOGS/$name.log 2>&1"
+  echo "$PY -m models.world_model_jepa.train --data $TRAIN --name $name --reg $reg --d $d --L $L --w_pred $wp --seed $seed --epochs $EPOCHS --out_root $RUNS > $LOGS/$name.log 2>&1 && \
+$PY -m models.world_model_jepa.refit_heads --run \$(ls -d $RUNS/*_$name | tail -1) --data $FALL >> $LOGS/$name.log 2>&1"
 }
 
 ensemble_job() {  # name seed
   local name=$1 seed=$2
   local r; r=$(rundir "$name")
   if [ -n "$r" ] && [ -f "$r/model_fall.pt" ]; then return; fi
-  echo "$PY -m models.world_model.train --data $TRAIN --name $name --seed $seed --epochs $EPOCHS > $LOGS/$name.log 2>&1 && \
-$PY -m models.world_model.refit_fall --run \$(ls -d logs/wm/*_$name | tail -1) --data $FALL >> $LOGS/$name.log 2>&1"
+  echo "$PY -m models.world_model.train --data $TRAIN --name $name --seed $seed --epochs $EPOCHS --out_root $RUNS > $LOGS/$name.log 2>&1 && \
+$PY -m models.world_model.refit_fall --run \$(ls -d $RUNS/*_$name | tail -1) --data $FALL >> $LOGS/$name.log 2>&1"
 }
 
 select_job() {  # model-name kind checkpoint [extra stages]
@@ -72,9 +73,10 @@ SWEEP=()
 if [ -n "${SWEEP_CONFIGS:-}" ]; then  # "reg d L w_pred;...", e.g. "vicreg 64 1 25;ema 64 1 25" (smoke tests)
   IFS=';' read -ra SWEEP <<< "$SWEEP_CONFIGS"
 else
-  # vicreg: the prediction weight trades predictability against keeping information (w_var 25, w_cov 1);
-  # ema has no such term
-  for d in 64 256; do for L in 1 3; do for wp in 25 5; do SWEEP+=("vicreg $d $L $wp"); done; done; done
+  # vicreg: the prediction weight trades predictability against keeping information (w_var 25, w_cov 1).
+  # 20k-iteration pilots (d 128, L 3): w_pred 5 -> key detection 0.21, 25 -> 0.29, so the sweep goes up, not down.
+  # ema has no such term.
+  for d in 64 256; do for L in 1 3; do for wp in 25 100; do SWEEP+=("vicreg $d $L $wp"); done; done; done
   for d in 64 256; do for L in 1 3; do SWEEP+=("ema $d $L 25"); done; done
 fi
 sname() { echo "$1_d$2_L$3_wp$4"; }
