@@ -25,5 +25,11 @@ namespace BMB
             Application.isEditor
                 ? Path.Combine(RepoRoot, "experiments", "w3_unity", "wm_calibration_unity.json")
                 : Path.Combine(Application.streamingAssetsPath, "wm_calibration_unity.json");
+
+        /// <summary>One JSON line per AI-pilot challenge (Claude vs the player); builds write to persistentDataPath.</summary>
+        public static string PilotResults =>
+            Application.isEditor
+                ? Path.Combine(RepoRoot, "experiments", "claude_pilot", "results.jsonl")
+                : Path.Combine(Application.persistentDataPath, "claude_pilot_results.jsonl");
     }
 }

@@ -611,6 +611,92 @@ Button.btn .neon-icon {
 .event.ball .event-bar { background-color: #FF8A1F; }
 .event.surprise .event-bar { background-color: #6C8CFF; }
 .event.surprise .event-text { color: #B9C8FF; }
+.event.pilot .event-bar { background-color: #FFFFFF; }
+.event.pilot .event-text { color: #F2F7FF; }
+.event.goal .event-bar { background-color: var(--green); }
+.event.goal .event-text { color: var(--green); }
+
+/* ---- AI pilot card (bottom centre) ------------------------------------------------------------------------------- */
+
+.pilot-card {
+    width: 520px;
+    padding: 12px 16px;
+    align-self: flex-end;
+}
+
+.pilot-stats {
+    flex-direction: row;
+    justify-content: space-between;
+    margin: 4px 0 6px 0;
+}
+
+.pilot-stat {
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 120px;
+}
+
+.pilot-mode {
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--dim);
+    border-width: 1px;
+    border-color: rgba(110, 140, 160, 0.5);
+    border-radius: 9px;
+    padding: 1px 8px;
+    margin-bottom: 6px;
+}
+
+.pilot-mode.on {
+    color: #070B14;
+    background-color: var(--cyan);
+    border-color: var(--cyan);
+    -unity-font-style: bold;
+}
+
+.pilot-flag {
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: #070B14;
+    background-color: var(--amber);
+    border-radius: 9px;
+    padding: 1px 8px;
+    margin: 0 6px 6px 0;
+    -unity-font-style: bold;
+}
+
+.pilot-flag.danger {
+    background-color: var(--red);
+    color: #FFFFFF;
+}
+
+.pilot-flag.win {
+    background-color: var(--green);
+}
+
+.pilot-order {
+    font-size: 13px;
+    white-space: normal;
+    margin-bottom: 2px;
+}
+
+.pilot-note {
+    font-size: 12px;
+    white-space: normal;
+    color: #9FE9FF;
+    -unity-font-style: italic;
+    margin-bottom: 6px;
+}
+
+.pilot-progress {
+    top: 0;
+    height: 8px;
+    background-color: var(--green);
+}
+
+.pilot-buttons {
+    margin-top: 8px;
+}
 
 /* ---- world model card ----------------------------------------------------------------------------------------- */
 

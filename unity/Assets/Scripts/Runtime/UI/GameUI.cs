@@ -21,6 +21,8 @@ namespace BMB
         [SerializeField] CommandSource commands;
         [Tooltip("The world model's ghost (optional): its toggle and horizon appear on the WORLD MODEL card")]
         [SerializeField] GhostView ghost;
+        [Tooltip("The AI pilot (optional): its order, note, goal and score appear on the AI PILOT card")]
+        [SerializeField] ClaudePilot pilot;
         [Tooltip("Show the controls overlay when play starts")]
         [SerializeField] bool showHelpOnStart = true;
 
@@ -60,7 +62,7 @@ namespace BMB
         {
             var doc = GetComponent<UIDocument>();
             if (doc != null && doc.rootVisualElement != null && manager != null)
-                Bind(doc.rootVisualElement, manager, commands, ghost);
+                Bind(doc.rootVisualElement, manager, commands, ghost, pilot);
         }
 
         void OnDisable()
@@ -71,11 +73,13 @@ namespace BMB
         }
 
         /// <summary>Wires a cloned GameHud tree to the game (also used by tests without a panel).</summary>
-        public void Bind(VisualElement treeRoot, DisturbanceManager disturbanceManager, CommandSource commandSource, GhostView ghostView = null)
+        public void Bind(VisualElement treeRoot, DisturbanceManager disturbanceManager, CommandSource commandSource, GhostView ghostView = null,
+                         ClaudePilot aiPilot = null)
         {
             manager = disturbanceManager;
             commands = commandSource;
             ghost = ghostView;
+            pilot = aiPilot;
             root = treeRoot.Q("root") ?? treeRoot;
             cards.Clear();
             railButtons.Clear();
@@ -111,6 +115,7 @@ namespace BMB
             root.Q("feet-slot").Add(feet);
             eventsList = root.Q("events");
             BuildWorldModel();
+            BuildPilot();
 
             BuildDrive(root.Q("drive-mode"), root.Q("drive-detail"));
             BuildStick();
@@ -369,6 +374,141 @@ namespace BMB
             }
         }
 
+        // --- AI pilot card ---------------------------------------------------------------------------------------------
+
+        VisualElement pilotCard, pilotProgress;
+        Label pilotMode, pilotFlag, pilotOrder, pilotNote, pilotGoal, pilotTime, pilotTimeName, pilotScore;
+        Button pilotTake, pilotVeto, pilotGuard;
+
+        void BuildPilot()
+        {
+            pilotCard = root.Q("pilot-card");
+            if (pilotCard == null)
+                return;
+            pilotMode = root.Q<Label>("pilot-mode");
+            pilotFlag = root.Q<Label>("pilot-flag");
+            pilotOrder = root.Q<Label>("pilot-order");
+            pilotNote = root.Q<Label>("pilot-note");
+            pilotGoal = root.Q<Label>("pilot-goal");
+            pilotTime = root.Q<Label>("pilot-time");
+            pilotTimeName = root.Q<Label>("pilot-time-name");
+            pilotScore = root.Q<Label>("pilot-score");
+            pilotProgress = root.Q("pilot-progress");
+            var buttons = root.Q("pilot-buttons");
+            buttons.Clear();
+            pilotTake = pilotVeto = pilotGuard = null;
+            if (pilot == null)
+                return;
+            pilotTake = new Button(() =>
+            {
+                if (pilot.Engaged)
+                    pilot.Release();
+                else
+                    pilot.Engage();
+            });
+            pilotVeto = new Button(() => pilot.Veto = !pilot.Veto) { text = "VETO" };
+            pilotGuard = new Button(() => pilot.Guard = !pilot.Guard) { text = "GUARD" };
+            foreach (var b in new[] { pilotTake, pilotVeto, pilotGuard })
+            {
+                b.AddToClassList("seg");
+                buttons.Add(b);
+            }
+            Tip(pilotTake, "Take the robot back from the AI pilot, or hand it over (P)");
+            Tip(pilotVeto, "World-model veto: reject orders, and stop running ones, that are imagined to end in a fall");
+            Tip(pilotGuard, "Surprise guard: after a world-model alarm hold the cautious gait for 2 s");
+            Tip(pilotCard, "Claude drives the robot through MCP tools (walk_to, move, stop, imagine); you try to stop it");
+        }
+
+        void RefreshPilot(Go2Controller c)
+        {
+            if (pilotCard == null)
+                return;
+            var round = pilot != null ? pilot.Challenge : null;
+            var show = pilot != null && c != null && (pilot.Engaged || pilot.Order != null || (round != null && (round.Running || round.LastResult != null)));
+            pilotCard.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
+            if (!show)
+                return;
+
+            pilotMode.text = pilot.Engaged ? "CLAUDE DRIVING" : "PLAYER DRIVING";
+            pilotMode.EnableInClassList("on", pilot.Engaged);
+            var o = pilot.Order;
+            if (o == null)
+                pilotOrder.text = pilot.Engaged ? "Waiting for the first order…" : "—";
+            else
+            {
+                var state = o.Running ? $"{o.Elapsed(c.TotalTime):0.0} s" : PilotOrder.StateName(o.State);
+                pilotOrder.text = $"#{o.Id} {o.Describe()} · {state}";
+            }
+            pilotNote.text = o != null && !string.IsNullOrEmpty(o.Note) ? $"“{o.Note}”" : "";
+            pilotNote.style.display = pilotNote.text.Length > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+
+            if (pilot.Goal is Vector2 goal)
+            {
+                var pose = PilotPose.Of(c);
+                var bearing = pose.BearingTo(goal) * Mathf.Rad2Deg;
+                pilotGoal.text = $"{pose.DistanceTo(goal):0.0} m · {Mathf.Abs(bearing):0}° {(bearing >= 0f ? "L" : "R")}";
+            }
+            else
+                pilotGoal.text = "—";
+
+            var progress = 0f;
+            if (round != null && round.Running)
+            {
+                pilotTimeName.text = round.TurnBased ? "TIME LEFT · TURNS" : "TIME LEFT";
+                pilotTime.text = $"{round.TimeLeft:0} s";
+                pilotTime.EnableInClassList("alert", round.TimeLeft < 10f);
+                progress = round.Score(round.DistanceLeft);
+            }
+            else if (round != null && round.LastResult != null)
+            {
+                var r = round.LastResult;
+                pilotTimeName.text = $"ROUND {r.round}";
+                pilotTime.text = r.success ? $"{r.time_s:0.0} s" : r.outcome.ToUpperInvariant();
+                pilotTime.EnableInClassList("alert", !r.success);
+                progress = r.score;
+            }
+            else
+            {
+                pilotTimeName.text = "TIME LEFT";
+                pilotTime.text = "—";
+            }
+            pilotScore.text = $"{progress:0}";
+            pilotProgress.style.width = Length.Percent(Mathf.Clamp(progress, 0f, 100f));
+
+            // Flag: the safety layer at work, or the round's result.
+            string flag = null;
+            var danger = false;
+            var win = false;
+            if (pilot.GuardActive)
+                flag = $"GUARD {pilot.GuardSecondsLeft:0.0} s";
+            else if (o != null && o.State == PilotOrderState.Halted && c.TotalTime - o.FinishedAt < 4.0)
+            {
+                flag = "HALTED";
+                danger = true;
+            }
+            else if (c.TotalTime - pilot.LastVetoTime < 4.0)
+            {
+                flag = "VETOED";
+                danger = true;
+            }
+            else if (round != null && !round.Running && round.LastResult != null && round.LastResult.success)
+            {
+                flag = "GOAL";
+                win = true;
+            }
+            pilotFlag.style.display = flag != null ? DisplayStyle.Flex : DisplayStyle.None;
+            pilotFlag.text = flag ?? "";
+            pilotFlag.EnableInClassList("danger", danger);
+            pilotFlag.EnableInClassList("win", win);
+
+            if (pilotTake != null)
+            {
+                pilotTake.text = pilot.Engaged ? "TAKE CONTROL" : "HAND TO AI";
+                pilotVeto.EnableInClassList("on", pilot.Veto);
+                pilotGuard.EnableInClassList("on", pilot.Guard);
+            }
+        }
+
         void BuildDrive(VisualElement mode, VisualElement detail)
         {
             driveDetail = detail;
@@ -436,7 +576,8 @@ namespace BMB
                 ("KEYS", new[]
                 {
                     ("1 – 7", "Select a tool · Esc none"), ("W/S A/D Q/E", "Drive · Tab cruise/manual"), ("R", "Reset the robot"),
-                    ("H", "Training ranges / hard mode"), ("V", "World-model ghost on / off"), ("F1", "This help"),
+                    ("H", "Training ranges / hard mode"), ("V", "World-model ghost on / off"), ("P", "AI pilot: take over / hand back"),
+                    ("F1", "This help"),
                 }),
                 ("TOOLS", new[]
                 {
@@ -571,6 +712,7 @@ namespace BMB
             RefreshWorldModel(ready ? c : null);
             RefreshEvents();
             RefreshDrive();
+            RefreshPilot(ready ? c : null);
         }
 
         void RefreshTool()

@@ -46,18 +46,27 @@ namespace BMB.Editor
             var ghost = new GameObject("WorldModel").AddComponent<GhostView>();
             W3Scenes.Set(ghost, ("controller", parts.Controller), ("ghostMaterial", GhostMaterial()));
 
+            // AI pilot (Claude through the MCP tools in Editor/Mcp): order executor, challenge, in-world view.
+            var pilotObject = new GameObject("Pilot");
+            var pilot = pilotObject.AddComponent<ClaudePilot>();
+            W3Scenes.Set(pilot, ("controller", parts.Controller), ("manager", manager));
+            var challenge = pilotObject.AddComponent<PilotChallenge>();
+            W3Scenes.Set(challenge, ("pilot", pilot));
+            var pilotView = pilotObject.AddComponent<PilotView>();
+            W3Scenes.Set(pilotView, ("pilot", pilot), ("challenge", challenge));
+
             // Game HUD (UI Toolkit) and an EventSystem fed by the Input System.
             var ui = new GameObject("GameUI");
             var document = ui.AddComponent<UIDocument>();
             document.panelSettings = PanelSettingsAsset();
             document.visualTreeAsset = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(HudPath);
             var gameUi = ui.AddComponent<GameUI>();
-            W3Scenes.Set(gameUi, ("manager", manager), ("commands", parts.Commands), ("ghost", ghost));
+            W3Scenes.Set(gameUi, ("manager", manager), ("commands", parts.Commands), ("ghost", ghost), ("pilot", pilot));
             if (Object.FindFirstObjectByType<EventSystem>() == null)
                 new GameObject("EventSystem", typeof(EventSystem), typeof(InputSystemUIInputModule));
 
             EditorSceneManager.SaveScene(parts.Scene, ScenePath);
-            Debug.Log($"[BMB] Built {ScenePath}: v2, foot μ 1.0, {LevelSize} m editable ground, manual control (W/S A/D Q/E), disturbance tools 1–7, H = hard mode, V = world-model ghost, F1 = help");
+            Debug.Log($"[BMB] Built {ScenePath}: v2, foot μ 1.0, {LevelSize} m editable ground, manual control (W/S A/D Q/E), disturbance tools 1–7, H = hard mode, V = world-model ghost, P = AI pilot, F1 = help");
         }
 
         public const string HudPath = "Assets/UI/GameHud.uxml";

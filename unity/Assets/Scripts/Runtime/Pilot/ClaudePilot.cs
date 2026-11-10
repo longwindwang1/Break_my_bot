@@ -91,6 +91,8 @@ namespace BMB
         public PilotOrder Order { get; private set; }
         /// <summary>Goal the pilot is trying to reach (Isaac world x, y), set by the challenge; null = none.</summary>
         public Vector2? Goal { get; set; }
+        /// <summary>The challenge using this pilot (set by <see cref="PilotChallenge"/>), for the tools and the HUD.</summary>
+        public PilotChallenge Challenge { get; internal set; }
 
         /// <summary>Counts attention events; a waiting tool returns when it changes.</summary>
         public long Attention => attention;
@@ -99,6 +101,19 @@ namespace BMB
         public event Action<ClaudePilot> AttentionRaised;
         /// <summary>Raised when an order is issued or finishes (HUD).</summary>
         public event Action<ClaudePilot, PilotOrder> OrderChanged;
+
+        /// <summary>Counters for scoring (orders issued, vetoed, halted by the lookahead, surprise alarms while engaged).</summary>
+        public int OrdersIssued { get; private set; }
+        public int Vetoes { get; private set; }
+        public int Halts { get; private set; }
+        public int Alarms { get; private set; }
+        public double LastVetoTime { get; private set; } = double.NegativeInfinity;
+
+        internal void CountVeto()
+        {
+            Vetoes++;
+            LastVetoTime = Now;
+        }
 
         /// <summary>Wiring for code-built setups (scene builder, headless runs, tests).</summary>
         public void Configure(Go2Controller robot, DisturbanceManager disturbances)
@@ -204,6 +219,7 @@ namespace BMB
             var note = string.IsNullOrEmpty(order.Note) ? "" : $" — {order.Note}";
             Record("pilot", $"#{order.Id} {order.Describe()}{note}");
             controller.CommandOverride = Guarded(CurrentCommand());
+            OrdersIssued++;
             OrderChanged?.Invoke(this, order);
             return order;
         }
@@ -260,8 +276,18 @@ namespace BMB
 
         void Update()
         {
-            if (Application.isPlaying)
-                TickLookahead(LookaheadBudgetMs);
+            if (!Application.isPlaying)
+                return;
+            // P: the player takes the robot back, or hands it to the AI pilot (it stands until the next order).
+            var keyboard = UnityEngine.InputSystem.Keyboard.current;
+            if (keyboard != null && keyboard.pKey.wasPressedThisFrame)
+            {
+                if (Engaged)
+                    Release();
+                else
+                    Engage();
+            }
+            TickLookahead(LookaheadBudgetMs);
         }
 
         /// <summary>
@@ -299,6 +325,7 @@ namespace BMB
             Finish(PilotOrderState.Halted, detail);
             controller.CommandOverride = Vector3.zero;
             Record("pilot", $"#{Order.Id} lookahead halt (P fall {LookaheadRisk:0.00})");
+            Halts++;
             Raise("halted", detail);
         }
 
@@ -314,6 +341,7 @@ namespace BMB
                 return;
             var d = m.Detector;
             var what = d.Spike ? $"spike |z| {d.SpikeStat:0} > {d.Params.SpikeZ:0} in base velocity" : $"CUSUM g {d.GPeak:0} > h {d.Params.H:0}";
+            Alarms++;
             var fresh = !GuardActive;
             if (guard)
                 guardUntil = Now + GuardHoldSeconds;

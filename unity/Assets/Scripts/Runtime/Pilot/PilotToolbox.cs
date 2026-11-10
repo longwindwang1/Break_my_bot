@@ -132,6 +132,7 @@ namespace BMB
                 {
                     var why = $"vetoed by the world model: imagining the first {ClaudePilot.VetoSeconds:0} s of \"{order.Describe()}\" " +
                               $"predicts P(fall within 1 s) up to {risk:0.00} (> {pilot.VetoFallProb:0.00}). Try another way or a slower speed.";
+                    pilot.CountVeto();
                     pilot.Manager?.Record("pilot", $"veto: {order.Describe()} (P fall {risk:0.00})", false);
                     var vetoed = Rejected(why);
                     vetoed.outcome = "vetoed";
@@ -186,6 +187,40 @@ namespace BMB
             var order = pilot.Issue(new PilotOrder { Kind = PilotOrderKind.Stand, Note = note });
             return Issued(order);
         }
+
+        /// <summary>
+        /// Starts a challenge round (null on error, with the reason): goal (x, y) or a random one 6–12 m away (seed),
+        /// time limit, turn-based or real time.
+        /// </summary>
+        public PilotChallengeStatus StartChallenge(float? goalX, float? goalY, int? seed, float timeLimit, bool turnBased, out string error)
+        {
+            error = null;
+            if (!Ready(out error))
+                return null;
+            if (pilot.Challenge == null)
+            {
+                error = "no challenge in this scene (rebuild the Playground scene)";
+                return null;
+            }
+            Vector2? goal = null;
+            if (goalX.HasValue != goalY.HasValue)
+            {
+                error = "give both goal_x and goal_y, or neither for a random goal";
+                return null;
+            }
+            if (goalX.HasValue)
+            {
+                goal = new Vector2(goalX.Value, goalY.Value);
+                if (!float.IsFinite(goal.Value.x) || !float.IsFinite(goal.Value.y) || !InsideLevel(goal.Value, out error))
+                {
+                    error ??= "goal must be finite numbers";
+                    return null;
+                }
+            }
+            return pilot.Challenge.Begin(goal, seed, timeLimit, turnBased);
+        }
+
+        public PilotChallengeStatus ChallengeStatus() => pilot.Challenge?.Status();
 
         bool Ready(out string why)
         {
@@ -306,6 +341,12 @@ namespace BMB
                 obs.goal_y = R(goal.y);
                 obs.goal_distance = R(pose.DistanceTo(goal));
                 obs.goal_bearing_deg = R(pose.BearingTo(goal) * Mathf.Rad2Deg, 1);
+            }
+            var round = pilot.Challenge;
+            if (round != null && round.Running)
+            {
+                obs.challenge_running = true;
+                obs.time_left_s = R(round.TimeLeft, 1);
             }
 
             var m = c.WorldModel;

@@ -84,6 +84,35 @@
                 <ui:VisualElement name="drive-detail" class="drive-detail" />
             </ui:VisualElement>
             <ui:VisualElement class="spacer" picking-mode="Ignore" />
+            <ui:VisualElement name="pilot-card" class="panel pilot-card">
+                <ui:VisualElement class="card-head" picking-mode="Ignore">
+                    <ui:Label text="AI PILOT" class="card-title" />
+                    <ui:VisualElement class="spacer" picking-mode="Ignore" />
+                    <ui:Label name="pilot-flag" class="pilot-flag" />
+                    <ui:Label name="pilot-mode" class="pilot-mode" />
+                </ui:VisualElement>
+                <ui:Label name="pilot-order" class="pilot-order" />
+                <ui:Label name="pilot-note" class="pilot-note" />
+                <ui:VisualElement class="pilot-stats" picking-mode="Ignore">
+                    <ui:VisualElement class="pilot-stat" picking-mode="Ignore">
+                        <ui:Label text="GOAL" class="stat-name" />
+                        <ui:Label name="pilot-goal" class="stat-value num" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="pilot-stat" picking-mode="Ignore">
+                        <ui:Label name="pilot-time-name" text="TIME LEFT" class="stat-name" />
+                        <ui:Label name="pilot-time" class="stat-value num" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="pilot-stat" picking-mode="Ignore">
+                        <ui:Label text="SCORE" class="stat-name" />
+                        <ui:Label name="pilot-score" class="stat-value num" />
+                    </ui:VisualElement>
+                </ui:VisualElement>
+                <ui:VisualElement class="bar-track" picking-mode="Ignore">
+                    <ui:VisualElement name="pilot-progress" class="bar pilot-progress" picking-mode="Ignore" />
+                </ui:VisualElement>
+                <ui:VisualElement name="pilot-buttons" class="seg-row pilot-buttons" />
+            </ui:VisualElement>
+            <ui:VisualElement class="spacer" picking-mode="Ignore" />
             <ui:VisualElement name="stick-panel" class="panel stick-panel">
                 <ui:Button name="turn-left" class="round-btn" />
                 <ui:VisualElement name="stick-slot" class="stick-slot" />

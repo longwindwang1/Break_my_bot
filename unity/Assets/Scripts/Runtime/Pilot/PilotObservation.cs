@@ -27,6 +27,9 @@ namespace BMB
         public float goal_y;
         public float goal_distance;
         public float goal_bearing_deg;
+        /// <summary>A challenge round is running, with this much time left (s).</summary>
+        public bool challenge_running;
+        public float time_left_s;
 
         /// <summary>World model: P(fall within 0.2 / 0.5 / 1 s); empty without a world model.</summary>
         public float[] fall_prob = Array.Empty<float>();
