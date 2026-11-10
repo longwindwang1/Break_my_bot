@@ -26,6 +26,7 @@ namespace BMB
         readonly WorldModelPrediction prediction;
         readonly float[] obs, action, lastAction, scan, frame, jointPosRel, jointVel, wmIn;
         Vector3 command;
+        Func<Vector3, float, Vector3> commandFunction;
         Vector3 position;
         float yaw;
         int step;  // imagined steps done (the state now is t0 + step)
@@ -41,6 +42,10 @@ namespace BMB
         public float[] GhostJointPos { get; }
         /// <summary>Highest fall probability (shortest horizon) predicted along the last finished dream.</summary>
         public float MaxFallProb { get; private set; }
+        /// <summary>Highest fall probability per horizon (world_model.fall_horizons_steps) along the last finished dream.</summary>
+        public float[] MaxFallProbs { get; }
+        /// <summary>Isaac yaw (rad) of the ghost at t0 + Horizon.</summary>
+        public float GhostYaw { get; private set; }
         /// <summary>Finished dreams since creation.</summary>
         public int Completed { get; private set; }
         /// <summary>Simulated time (controller TotalTime) at the start of the last finished dream.</summary>
@@ -48,6 +53,7 @@ namespace BMB
 
         Vector3[] path = Array.Empty<Vector3>();
         float maxFall;
+        float[] maxFalls;
         double startTime;
 
         public WorldModelDreamer(Go2Controller controller)
@@ -74,14 +80,21 @@ namespace BMB
             jointVel = new float[n];
             wmIn = new float[layout.InputDim];
             GhostJointPos = new float[n];
+            MaxFallProbs = new float[prediction.FallProb.Length];
+            maxFalls = new float[prediction.FallProb.Length];
         }
 
         /// <summary>
         /// Starts a dream from the controller's latest policy step (call right after it, e.g. from PolicyStepped).
         /// Returns false if the monitor has no prediction yet.
         /// </summary>
-        public bool Begin()
+        /// <param name="commandFunction">
+        /// Optional command per imagined step from the imagined base pose (Unity position, Isaac yaw in rad), for
+        /// imagining an order such as "walk to that point"; null = hold the robot's current command.
+        /// </param>
+        public bool Begin(Func<Vector3, float, Vector3> commandFunction = null)
         {
+            this.commandFunction = commandFunction;
             var m = controller.WorldModel;
             if (m == null || !m.HasPrediction || Horizon < 1)
                 return false;
@@ -98,6 +111,8 @@ namespace BMB
                 path = new Vector3[Horizon + 1];
             path[0] = position;
             maxFall = prediction.FallProb[0];
+            for (var i = 0; i < maxFalls.Length; i++)
+                maxFalls[i] = prediction.FallProb[i];
             startTime = controller.TotalTime;
             step = 0;
             Busy = true;
@@ -137,6 +152,8 @@ namespace BMB
             step++;
             path[step] = position;
             maxFall = Mathf.Max(maxFall, prediction.FallProb[0]);
+            for (var i = 0; i < maxFalls.Length; i++)
+                maxFalls[i] = Mathf.Max(maxFalls[i], prediction.FallProb[i]);
         }
 
         /// <summary>One policy step in imagination, from the predicted state of the current step.</summary>
@@ -148,6 +165,8 @@ namespace BMB
             Array.Copy(s, 9 + jointPosRel.Length, jointVel, 0, jointVel.Length);
             var gravity = new Vector3(s[6], s[7], s[8]);
             var rotation = WmPose.Rotation(yaw, gravity);
+            if (commandFunction != null)
+                command = commandFunction(position, yaw);
             scanner.Scan(position, rotation, scan);
             builder.BuildFromTerms(new Vector3(s[0], s[1], s[2]), new Vector3(s[3], s[4], s[5]), gravity, command,
                                    jointPosRel, jointVel, lastAction, scan, obs);
@@ -164,6 +183,7 @@ namespace BMB
             Busy = false;
             var s = prediction.StateMean;  // state at t0 + Horizon
             GhostPosition = position;
+            GhostYaw = yaw;
             GhostRotation = WmPose.Rotation(yaw, new Vector3(s[6], s[7], s[8]));
             for (var i = 0; i < GhostJointPos.Length; i++)
                 GhostJointPos[i] = itf.DefaultJointPos[i] + s[9 + i];
@@ -171,6 +191,7 @@ namespace BMB
                 Path = new Vector3[path.Length];
             Array.Copy(path, Path, path.Length);
             MaxFallProb = maxFall;
+            Array.Copy(maxFalls, MaxFallProbs, maxFalls.Length);
             StartTime = startTime;
             Completed++;
         }

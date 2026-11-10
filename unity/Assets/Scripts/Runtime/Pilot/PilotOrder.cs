@@ -26,8 +26,8 @@ namespace BMB
         Fell,
         /// <summary>The robot was reset to its spawn pose (player, R key).</summary>
         Reset,
-        /// <summary>Interrupted by a world-model surprise alarm.</summary>
-        Alarm,
+        /// <summary>Stopped by the world-model lookahead: the imagined next second ended in a likely fall.</summary>
+        Halted,
         /// <summary>The pilot handed control back to the player.</summary>
         Released,
     }

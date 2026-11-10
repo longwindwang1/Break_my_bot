@@ -18,6 +18,9 @@ namespace BMB
         public float base_height;
         public int falls;
         public bool engaged;
+        /// <summary>The safety guard holds the cautious gait (after a surprise alarm) for this many more seconds.</summary>
+        public bool guard_active;
+        public float guard_seconds_left;
 
         public bool has_goal;
         public float goal_x;
@@ -103,11 +106,13 @@ namespace BMB
         /// <summary>False if the order was rejected (bad arguments, world-model veto, not playing).</summary>
         public bool accepted;
         /// <summary>
-        /// Why the call returned: rejected, vetoed, arrived, done, fell, reset, disturbed, surprise, alarm, released,
-        /// max_wait (the order is still running), or issued (did not wait).
+        /// Why the call returned: rejected, vetoed, imagined, issued (did not wait), arrived, done, halted (lookahead),
+        /// alarm, fell, reset, disturbed (the player did something), released, replaced, max_wait (still running).
         /// </summary>
         public string outcome;
         public string detail;
         public PilotObservation observation;
+        /// <summary>The world model's imagination of the order (first second for the veto, or the imagine tool's span).</summary>
+        public PilotImagined imagined;
     }
 }

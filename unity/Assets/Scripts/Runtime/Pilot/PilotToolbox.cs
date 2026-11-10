@@ -88,24 +88,95 @@ namespace BMB
             speed = Mathf.Min(speed, maxSpeed);
             if (!InsideLevel(new Vector2(x, y), out why))
                 return Rejected(why);
-            var order = pilot.Issue(new PilotOrder { Kind = PilotOrderKind.WalkTo, Target = new Vector2(x, y), Speed = speed, Note = note });
-            return Issued(order);
+            return IssueChecked(new PilotOrder { Kind = PilotOrderKind.WalkTo, Target = new Vector2(x, y), Speed = speed, Note = note });
         }
 
         public PilotActionResult Move(float vx, float vy, float wz, float seconds, string note = null)
         {
+            if (!MoveOrder(vx, vy, wz, seconds, note, out var order, out var why))
+                return Rejected(why);
+            var result = IssueChecked(order);
+            if (result.accepted && order.Velocity != new Vector3(vx, vy, wz))
+                result.detail += $" (clamped to the training ranges: vx {order.Velocity.x:F2}, vy {order.Velocity.y:F2}, wz {order.Velocity.z:F2})";
+            return result;
+        }
+
+        bool MoveOrder(float vx, float vy, float wz, float seconds, string note, out PilotOrder order, out string why)
+        {
+            order = null;
+            if (!Ready(out why))
+                return false;
+            if (!float.IsFinite(vx) || !float.IsFinite(vy) || !float.IsFinite(wz) || !float.IsFinite(seconds))
+                why = "vx, vy, wz and seconds must be finite numbers";
+            else if (seconds <= 0f || seconds > MaxMoveSeconds)
+                why = $"seconds must be in (0, {MaxMoveSeconds:0}]";
+            if (why != null)
+                return false;
+            var v = PilotDrive.Clamp(new Vector3(vx, vy, wz), Controller.Interface.Commands);
+            order = new PilotOrder { Kind = PilotOrderKind.Move, Velocity = v, Seconds = seconds, Note = note };
+            return true;
+        }
+
+        /// <summary>
+        /// Issues an order unless the veto is on and the world model, imagining its first
+        /// <see cref="ClaudePilot.VetoSeconds"/>, predicts P(fall within 1 s) above the threshold.
+        /// </summary>
+        PilotActionResult IssueChecked(PilotOrder order)
+        {
+            PilotImagined imagined = null;
+            if (pilot.Veto)
+            {
+                imagined = pilot.Imagine(order, ClaudePilot.VetoSeconds);
+                var risk = imagined != null ? ClaudePilot.Risk(imagined.max_fall_prob) : 0f;
+                if (risk > pilot.VetoFallProb)
+                {
+                    var why = $"vetoed by the world model: imagining the first {ClaudePilot.VetoSeconds:0} s of \"{order.Describe()}\" " +
+                              $"predicts P(fall within 1 s) up to {risk:0.00} (> {pilot.VetoFallProb:0.00}). Try another way or a slower speed.";
+                    pilot.Manager?.Record("pilot", $"veto: {order.Describe()} (P fall {risk:0.00})", false);
+                    var vetoed = Rejected(why);
+                    vetoed.outcome = "vetoed";
+                    vetoed.imagined = imagined;
+                    return vetoed;
+                }
+            }
+            var result = Issued(pilot.Issue(order));
+            result.imagined = imagined;
+            return result;
+        }
+
+        /// <summary>Imagines a walk-to without executing it.</summary>
+        public PilotActionResult ImagineWalkTo(float x, float y, float speed = DefaultSpeed, float seconds = 2f)
+        {
             if (!Ready(out var why))
                 return Rejected(why);
-            if (!float.IsFinite(vx) || !float.IsFinite(vy) || !float.IsFinite(wz) || !float.IsFinite(seconds))
-                return Rejected("vx, vy, wz and seconds must be finite numbers");
-            if (seconds <= 0f || seconds > MaxMoveSeconds)
-                return Rejected($"seconds must be in (0, {MaxMoveSeconds:0}]");
-            var v = PilotDrive.Clamp(new Vector3(vx, vy, wz), Controller.Interface.Commands);
-            var order = pilot.Issue(new PilotOrder { Kind = PilotOrderKind.Move, Velocity = v, Seconds = seconds, Note = note });
-            var result = Issued(order);
-            if (v != new Vector3(vx, vy, wz))
-                result.detail += $" (clamped to the training ranges: vx {v.x:F2}, vy {v.y:F2}, wz {v.z:F2})";
-            return result;
+            if (!float.IsFinite(x) || !float.IsFinite(y) || !float.IsFinite(speed) || speed <= 0f)
+                return Rejected("x, y must be finite and speed > 0");
+            speed = Mathf.Min(speed, Controller.Interface.Commands.LinVelX[1]);
+            return Imagined(new PilotOrder { Kind = PilotOrderKind.WalkTo, Target = new Vector2(x, y), Speed = speed }, seconds);
+        }
+
+        /// <summary>Imagines a timed velocity command without executing it.</summary>
+        public PilotActionResult ImagineMove(float vx, float vy, float wz, float seconds)
+        {
+            if (!MoveOrder(vx, vy, wz, seconds, null, out var order, out var why))
+                return Rejected(why);
+            return Imagined(order, seconds);
+        }
+
+        PilotActionResult Imagined(PilotOrder order, float seconds)
+        {
+            var imagined = pilot.Imagine(order, float.IsFinite(seconds) ? seconds : 2f);
+            if (imagined == null)
+                return Rejected("no world-model prediction yet (the robot needs a moment after a reset)");
+            var risk = ClaudePilot.Risk(imagined.max_fall_prob);
+            return new PilotActionResult
+            {
+                accepted = true,
+                outcome = "imagined",
+                detail = $"{order.Describe()}: after {imagined.seconds:0.0} s at ({imagined.end_x:0.0}, {imagined.end_y:0.0}), " +
+                         $"max P(fall within 1 s) {risk:0.00}" + (pilot.Veto && risk > pilot.VetoFallProb ? " — the veto would reject it" : ""),
+                imagined = imagined,
+            };
         }
 
         public PilotActionResult Stop(string note = null)
@@ -225,6 +296,8 @@ namespace BMB
             obs.wz = R(w.z);
             obs.base_height = R(c.BaseHeight, 3);
             obs.falls = c.Falls;
+            obs.guard_active = pilot.GuardActive;
+            obs.guard_seconds_left = R(pilot.GuardSecondsLeft, 1);
 
             if (pilot.Goal is Vector2 goal)
             {
