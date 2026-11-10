@@ -1,0 +1,6 @@
+# On top of torch 2.7 (CUDA 12.8); versions as on the Linux training machine (env_isaaclab)
+numpy==1.26.4
+pyyaml==6.0.2
+matplotlib==3.10.3
+tensorboard==2.21.0
+pytest

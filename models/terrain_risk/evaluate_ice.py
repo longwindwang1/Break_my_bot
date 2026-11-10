@@ -65,6 +65,49 @@ def next_fall_class(cls_tn: np.ndarray, term: np.ndarray, trunc: np.ndarray) -> 
     return out
 
 
+def ice_alarm_metrics(al: np.ndarray, term: np.ndarray, trunc: np.ndarray, es: np.ndarray, foot_ice: np.ndarray,
+                      details: bool = False) -> dict:
+    """Surprisal alarms [N, T] (bool) on an ice split ([T, N] term / trunc / episode_step, foot_ice [T, N, 4]):
+    falls (after >= 5 s in the episode) with an alarm within 0.5 / 1 / 2 s before, per fall class; ice contacts
+    (first foot on a patch after >= 1 s off ice) with an alarm within 1 s; alarms per 10 min off ice, not within
+    3 s before a fall. details: also per-fall arrays (env, step, class, hit within 1 s) for paired comparisons."""
+    T, N = term.shape
+    cls_tn = fall_classes(foot_ice, term, es)
+    falls = [(n, e) for n, e in zip(*np.nonzero(term.T)) if es[e, n] >= 250]
+    fc = np.array([cls_tn[e, n] for n, e in falls])
+    y3s, k3s = fall_labels(term.T, trunc.T, [150])
+    cs = np.concatenate([np.zeros((N, 1), np.int64), np.cumsum(al, axis=1)], axis=1)  # alarms in [a, b) = cs[b] - cs[a]
+    wm_res = {}
+    for wname, W in (("0.5s", 25), ("1s", 50), ("2s", 100)):
+        hit = np.array([cs[n, e + 1] - cs[n, max(0, e + 1 - W)] > 0 for n, e in falls], bool)
+        wm_res[f"falls_with_alarm_within_{wname}"] = {c: float(hit[fc == ci].mean()) if (fc == ci).any() else None
+                                                      for ci, c in enumerate(CLASSES)}
+    # ice contacts: first step with a foot on a patch after >= 1 s off ice, within one episode
+    on = foot_ice.max(axis=2)  # [T, N]; 2 if any foot on hidden ice
+    start = np.zeros((T, N), bool)  # first foot on a patch after >= 1 s off ice, within the episode
+    off = np.full(N, 10**6)
+    for t in range(T):
+        off = np.where(es[t] == 0, 10**6, off)
+        start[t] = (on[t] > 0) & (off >= ICE_WINDOW) & (es[t] >= 25)
+        off = np.where(on[t] > 0, 0, off + 1)
+    start[T - ICE_WINDOW :] = False
+    for c in (1, 2):
+        tt_, nn_ = np.nonzero(start & (on == c))
+        hit = cs[nn_, tt_ + ICE_WINDOW] - cs[nn_, tt_] > 0
+        wm_res[f"{CLASSES[c]}_ice_contacts"] = {"count": int(len(tt_)), "alarm_within_1s": float(hit.mean()) if len(hit) else None}
+    near_ice = np.zeros((T, N), bool)  # on ice now or within the last second
+    last_on = np.full(N, -10**6)
+    for t in range(T):
+        last_on = np.where(on[t] > 0, t, np.where(es[t] == 0, -10**6, last_on))
+        near_ice[t] = t - last_on <= ICE_WINDOW
+    quiet = ~near_ice.T & ~(y3s[..., 0] & k3s[..., 0]) & (es.T >= 25)
+    wm_res["alarms_per_10min_off_ice_no_fall"] = float(al[quiet].sum() / quiet.sum() * 30000)
+    if details:
+        wm_res["_falls"] = {"env": np.array([n for n, _ in falls]), "step": np.array([e for _, e in falls]), "cls": fc,
+                            "hit_1s": np.array([cs[n, e + 1] - cs[n, max(0, e + 1 - 50)] > 0 for n, e in falls], bool)}
+    return wm_res
+
+
 def lead_runs(score_nt: np.ndarray, falls: list[tuple[int, int]], thr: float) -> np.ndarray:
     leads = []
     for n, e in falls:
@@ -282,32 +325,7 @@ def main():
 
     if args.wm_run:
         al = wm_alarms(Path(args.wm_run), d, dev)  # [N, T]
-        cs = np.concatenate([np.zeros((N, 1), np.int64), np.cumsum(al, axis=1)], axis=1)  # alarms in [a, b) = cs[b] - cs[a]
-        wm_res = {}
-        for wname, W in (("0.5s", 25), ("1s", 50), ("2s", 100)):
-            hit = np.array([cs[n, e + 1] - cs[n, max(0, e + 1 - W)] > 0 for n, e in falls], bool)
-            wm_res[f"falls_with_alarm_within_{wname}"] = {c: float(hit[fc == ci].mean()) if (fc == ci).any() else None
-                                                          for ci, c in enumerate(CLASSES)}
-        # ice contacts: first step with a foot on a patch after >= 1 s off ice, within one episode
-        on = foot_ice.max(axis=2)  # [T, N]; 2 if any foot on hidden ice
-        start = np.zeros((T, N), bool)  # first foot on a patch after >= 1 s off ice, within the episode
-        off = np.full(N, 10**6)
-        for t in range(T):
-            off = np.where(es[t] == 0, 10**6, off)
-            start[t] = (on[t] > 0) & (off >= ICE_WINDOW) & (es[t] >= 25)
-            off = np.where(on[t] > 0, 0, off + 1)
-        start[T - ICE_WINDOW :] = False
-        for c in (1, 2):
-            tt_, nn_ = np.nonzero(start & (on == c))
-            hit = cs[nn_, tt_ + ICE_WINDOW] - cs[nn_, tt_] > 0
-            wm_res[f"{CLASSES[c]}_ice_contacts"] = {"count": int(len(tt_)), "alarm_within_1s": float(hit.mean()) if len(hit) else None}
-        near_ice = np.zeros((T, N), bool)  # on ice now or within the last second
-        last_on = np.full(N, -10**6)
-        for t in range(T):
-            last_on = np.where(on[t] > 0, t, np.where(es[t] == 0, -10**6, last_on))
-            near_ice[t] = t - last_on <= ICE_WINDOW
-        quiet = ~near_ice.T & ~(y3s[..., 0] & k3s[..., 0]) & (es.T >= 25)
-        wm_res["alarms_per_10min_off_ice_no_fall"] = float(al[quiet].sum() / quiet.sum() * 30000)
+        wm_res = ice_alarm_metrics(al, term, trunc, es, foot_ice)
         results["world_model_surprisal"] = wm_res
         print(f"[ice] world-model surprisal: {json.dumps(wm_res)}", flush=True)
 

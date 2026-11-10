@@ -39,6 +39,7 @@ Common to all splits:
 | `clean` | 2048 × 1500 (3.07M) | 200 | μ fixed per episode in [0.6, 1.25], no pushes, no noise, terrain as train | threshold calibration, false alarms |
 | `events` | 4096 × 600 (2.46M) | 300 | clean, difficulty 0–0.5. At step 200 (4 s) env i gets event `i % 7`: none, all feet μ→0.3 / 0.1 / 0.05, one foot μ→0.05, push 0.5 / 1.0 m/s (fixed magnitude, random direction) | detection rate and delay |
 | `events_pits` | 2048 × 600 (1.23M) | 400 | pit terrain only, blocks 15–30 cm (training had 4–16 cm), difficulty 0.5–1. From step 200 the height scan reports flat ground in about half the envs | hidden pits / breakable ice |
+| `events_test`, `events_pits_test` (W7) | 4096 × 600 / 2048 × 600 | 310 / 410 | same conditions as `events` / `events_pits` (`SPLIT_KIND` in `isaac/wm_splits.py`) | report only: the W7 world-model comparison chooses detector settings on `events` / `events_pits` and scores them here |
 
 ## Contents
 | split | wall time | falls (v1 / v2) | falls per robot-minute (v1 / v2) | other |
@@ -48,6 +49,8 @@ Common to all splits:
 | clean | 201 s | 192 (83 / 109) | 0.24 / 0.16 | 1 969 time-outs |
 | events | 123 s | 239 (158 / 81) | 0.58 / 0.15 | 9 envs reset before the event; about 584 envs per event type |
 | events_pits | 58 s | 568 (221 / 347) | 1.62 / 1.27 | 1 071 envs deceived |
+| events_test | 122 s | 248 (163 / 85) | 0.60 / 0.16 | 6 envs reset before the event; collected 2026-11-09 into `logs/wm_data/w7_events_test` |
+| events_pits_test | 59 s | 569 (217 / 352) | 1.59 / 1.29 | 1 061 envs deceived; `logs/wm_data/w7_events_pits_test` |
 
 - Terrain tiles (train and clean; 200 tiles): random_rough 39, inverted stairs 34, boxes 29, pits 25, slopes 25, stairs 25, inverted slopes 23.
 - Fall labels for the world model use horizons of 10, 25 and 50 steps. In the train envs that gives 5 105, 13 595 and 27 488 positive steps; censored steps and noisy envs are excluded.

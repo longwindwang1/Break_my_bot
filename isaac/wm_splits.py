@@ -15,6 +15,9 @@ functions. Used by isaac/collect_wm_data.py, isaac/dump_terrain.py and isaac/eva
   geo_train2/3   more terrain-risk training data (other terrain seeds)
   ice_train(2/3) as geo_train plus ice patches (isaac/ice.py), all visible; other terrain seeds
   ice_test       as ice_train, held-out terrain seed, half of the ice patches hidden
+  events_test, events_pits_test
+                 as events / events_pits with other seeds: report-only copies (W7 JEPA comparison), so
+                 detector settings chosen on events / events_pits are scored on unseen rollouts
 """
 
 from __future__ import annotations
@@ -35,13 +38,23 @@ SPLITS = {
     "ice_train2": dict(num_envs=4096, steps=1500, seed=810),
     "ice_train3": dict(num_envs=4096, steps=1500, seed=820),
     "ice_test": dict(num_envs=2048, steps=1500, seed=900),
+    "events_test": dict(num_envs=4096, steps=600, seed=310),
+    "events_pits_test": dict(num_envs=2048, steps=600, seed=410),
 }
+SPLIT_KIND = {"events_test": "events", "events_pits_test": "events_pits"}  # copies with another seed
 NOISY_SPLITS = ("train", "train_nominal")  # every 4th env gets action noise
 ICE_SPLITS = {"ice_train": 0.0, "ice_train2": 0.0, "ice_train3": 0.0, "ice_test": 0.5}  # -> hidden patch fraction
 GEO_SPLITS = ("geo_train", "geo_test", "geo_train2", "geo_train3", *ICE_SPLITS)  # pits_deep + height map
 EVENTS = ["none", "mu_0.3", "mu_0.1", "mu_0.05", "foot_0.05", "push_0.5", "push_1.0"]  # id = index
 POLICY_PATTERN = ["v2", "v2", "v1"]  # env i -> POLICY_PATTERN[i % 3]
 POLICY_IDS = {"v1": 0, "v2": 1}  # world-model policy one-hot order (robot_interface.yaml world_model.policies)
+
+
+
+def split_kind(split: str) -> str:
+    """The split whose conditions `split` uses (itself, except for the seed-only copies in SPLIT_KIND)."""
+    return SPLIT_KIND.get(split, split)
+
 
 # (row, col) -> (sub-terrain name, difficulty), filled while the terrain generator runs
 TILES: dict[tuple[int, int], tuple[str, float]] = {}
@@ -72,6 +85,7 @@ def configure(cfg, split: str, num_envs: int, seed: int, event_step: int = 200) 
     """Edit a Go2V2EnvCfg_PLAY for the given split."""
     from isaaclab.managers import EventTermCfg
 
+    split = split_kind(split)
     from isaac.bmb_tasks import mdp
 
     cfg.scene.num_envs = num_envs

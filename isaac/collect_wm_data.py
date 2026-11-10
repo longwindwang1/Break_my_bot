@@ -28,7 +28,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 from isaac.wm_splits import (  # noqa: E402  (no isaaclab imports at module level)
-    EVENTS, GEO_SPLITS, ICE_SPLITS, NOISY_SPLITS, POLICY_IDS, POLICY_PATTERN, SPLITS, TILES, configure, install_tile_logger,
+    EVENTS, GEO_SPLITS, ICE_SPLITS, NOISY_SPLITS, POLICY_IDS, POLICY_PATTERN, SPLITS, TILES, configure, install_tile_logger, split_kind,
 )
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -47,6 +47,7 @@ args_cli, _ = parser.parse_known_args()
 for k, v in SPLITS[args_cli.split].items():
     if getattr(args_cli, k) is None:
         setattr(args_cli, k, v)
+KIND = split_kind(args_cli.split)  # events_test behaves like events, etc.
 
 from isaaclab.app import AppLauncher  # noqa: E402
 
@@ -116,7 +117,7 @@ def main():
     noise_std = torch.zeros(N, device=device)
     if args_cli.split in NOISY_SPLITS:
         noise_std[env_idx % 4 == 0] = args_cli.action_noise
-    event_type = (env_idx % len(EVENTS)) if args_cli.split == "events" else torch.zeros(N, dtype=torch.long, device=device)
+    event_type = (env_idx % len(EVENTS)) if KIND == "events" else torch.zeros(N, dtype=torch.long, device=device)
 
     fric = env.event_manager.get_term_cfg("foot_friction_reset")
     step_dt = env.step_dt
@@ -169,7 +170,7 @@ def main():
         "seed": args_cli.seed,
         "step_dt": step_dt,
         "event_step": args_cli.event_step,
-        "events": EVENTS if args_cli.split == "events" else (["none", "deceived"] if args_cli.split == "events_pits" else ["none"]),
+        "events": EVENTS if KIND == "events" else (["none", "deceived"] if KIND == "events_pits" else ["none"]),
         "policy_pattern": POLICY_PATTERN,
         "policy_ids": POLICY_IDS,
         "checkpoints": {"v2": args_cli.v2, "v1": args_cli.v1},
@@ -216,7 +217,7 @@ def main():
             event = torch.zeros(N, dtype=torch.int8, device=device)
 
             # disturbances, applied before o_t is used (they act during step t)
-            if args_cli.split == "train":
+            if KIND == "train":
                 next_mu -= 1
                 next_push -= 1
                 ids = (next_mu <= 0).nonzero().squeeze(1)
@@ -227,7 +228,7 @@ def main():
                 push(ids, torch.rand(len(ids), device=device) * 1.0)
                 push_flag[ids] = True
                 next_push[ids] = countdown(5.0, 10.0, len(ids))
-            elif args_cli.split == "events" and t == args_cli.event_step:
+            elif KIND == "events" and t == args_cli.event_step:
                 for eid, name in enumerate(EVENTS):
                     ids = (event_type == eid).nonzero().squeeze(1)
                     if name.startswith("mu_"):
@@ -255,7 +256,7 @@ def main():
             dist, idx = (root_xy[:, None, :] - origins_xy[None]).abs().amax(-1).min(1)
             tile = torch.where(dist <= tile_size / 2, idx, torch.full_like(idx, -1))
             deceived = bmb_state.deception_active(env)
-            if args_cli.split == "events_pits":
+            if KIND == "events_pits":
                 was = torch.from_numpy(mm["deceived"][t - 1]).to(device) if t > 0 else torch.zeros_like(deceived)
                 event[deceived & ~was] = 1
 

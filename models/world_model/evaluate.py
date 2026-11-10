@@ -226,10 +226,23 @@ def fall_eval(d: WMData, P: dict) -> dict:
 
 
 # --- 4. surprisal + CUSUM ------------------------------------------------------------------------------
-class Scorer:
-    """Per-frame standardized-score inputs for one split: z [N, T, S] (frame u vs the prediction from u-1)."""
+def score_masks(d: WMData, warmup: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """(scored, reset, prefall) [N, T]: frame u is scored against the prediction from u-1 if that transition is
+    valid and the episode step is >= warmup; an alarm within fall_horizons[-1] steps before a fall is not false."""
+    scored = torch.zeros_like(d.trans_ok)
+    scored[:, 1:] = d.trans_ok[:, :-1]
+    return scored & (d.episode_step >= warmup), d.episode_step == 0, d.fall_y[..., -1]
 
-    def __init__(self, d: WMData, P: dict, var_floor: torch.Tensor, warmup: int):
+
+class Scorer:
+    """Per-frame standardized-score inputs for one split: z [N, T, S] (frame u vs the prediction from u-1).
+
+    Interface used by calibrate() (shared with models/world_model_jepa/predict.py LatentScorer):
+    score(wname, clip, stat) [N, T], spike() [N, T], and the masks scored / reset / prefall, policy_id.
+    whiten: optional {wname: (dims, W)} for the "maha_*" weightings: u = W z[dims] has identity covariance on
+    held-out training-split residuals (Mahalanobis), S = mean over dims of 0.5 * (min(u^2, clip) - 1) (statistic norm only)."""
+
+    def __init__(self, d: WMData, P: dict, var_floor: torch.Tensor, warmup: int, whiten: dict | None = None):
         S = d.layout.state_dim
         s = d.frames[..., torch.as_tensor(d.layout.state_in_frame, device=d.frames.device)]
         mu = torch.zeros_like(s)
@@ -239,32 +252,67 @@ class Scorer:
         self.z = zscores(s, mu, var, var_floor)
         self.var = var
         self.var_floor = var_floor
-        scored = torch.zeros_like(d.trans_ok)
-        scored[:, 1:] = d.trans_ok[:, :-1]
-        self.scored = scored & (d.episode_step >= warmup)
-        self.reset = d.episode_step == 0
-        self.prefall = d.fall_y[..., -1]  # an alarm within fall_horizons[-1] steps before a fall is not false
+        self.whiten = whiten or {}
+        self.scored, self.reset, self.prefall = score_masks(d, warmup)
         self.policy_id = d.policy_id
 
     def raw(self, w: torch.Tensor, clip: float, stat: str) -> torch.Tensor:
         return score(self.z, self.var, self.var_floor, w, clip, stat)
 
+    def score(self, wname: str, clip: float, stat: str) -> torch.Tensor:
+        if wname.startswith("maha"):
+            if stat != "norm":
+                raise ValueError("maha weightings use the norm statistic")
+            dims, W = self.whiten[wname]
+            u = self.z[..., dims] @ W.T
+            return 0.5 * (torch.clamp(u * u, max=clip) - 1.0).mean(-1)
+        return self.raw(torch.as_tensor(weights(wname), dtype=torch.float32, device=self.z.device), clip, stat)
+
+    def spike(self) -> torch.Tensor:
+        return spike_stat(self.z)
+
+
+MAHA_DIMS = {"maha_all": None, "maha_joints": "joints"}  # weighting -> state dims it whitens (None = all)
+
+
+@torch.no_grad()
+def whitening(sc: Scorer, mask: torch.Tensor, samples: int = 2_000_000) -> dict:
+    """{maha_*: (dims, W)} from the covariance of the standardized residual z at `mask` steps (held-out envs of
+    the training split; never the calibration or test splits): W Sigma W^T = I, so |W z|^2 is the Mahalanobis
+    distance of the residual."""
+    z = sc.z[mask]
+    z = z[torch.randperm(len(z), device=z.device)[:samples]].double()
+    out = {}
+    for name, scheme in MAHA_DIMS.items():
+        dims = torch.arange(z.shape[1], device=z.device) if scheme is None else \
+            torch.as_tensor(np.nonzero(weights(scheme))[0], device=z.device)
+        C = torch.cov(z[:, dims].T)
+        Lc = torch.linalg.cholesky(C + 1e-6 * torch.eye(len(dims), dtype=C.dtype, device=C.device))
+        out[name] = (dims, torch.linalg.inv(Lc).float())
+    return out
+
+
+def first_alarm(win: torch.Tensor) -> torch.Tensor:
+    """win [n, W] alarms at the steps after an event -> 1-based step of the first alarm, 10**6 if none."""
+    return torch.where(win.any(1), win.float().argmax(1) + 1, torch.full_like(win[:, 0], 10**6, dtype=torch.long))
+
 
 def calibrate(clean: Scorer, events: Scorer, ev_data: WMData, pits: Scorer | None, pits_data: WMData | None,
-              target_far: float, policies: list[str], event_step: int, grid: dict) -> dict:
+              target_far: float, policies: list[str], event_step: int, grid: dict, combos: list | None = None) -> dict:
     """Per policy: spike threshold at half the false-alarm budget (clean half A), then for every grid
     configuration the smallest CUSUM h whose combined false-alarm rate (with the spike detector) meets the
-    budget on half A; verified on half B; detection on the events and pits splits."""
-    dev = clean.z.device
+    budget on half A; verified on half B; detection on the events and pits splits.
+    combos: (stat, weights, clip) triples to try (default: the full product of grid stat x weights x clip)."""
+    dev = clean.scored.device
     hs = torch.logspace(np.log10(0.2), np.log10(400.0), 160, device=dev)
-    N = clean.z.shape[0]
+    N = clean.scored.shape[0]
     half_a = torch.arange(N, device=dev) % 2 == 0
     ev_names = ev_data.meta["events"]
     ev_type = torch.from_numpy(ev_data.info["event_type"].astype(np.int64)).to(dev)
     reset_before = torch.from_numpy(ev_data.info["reset_before_event"]).to(dev)
     E = event_step
-    sp_clean, sp_ev = spike_stat(clean.z), spike_stat(events.z)
-    sp_pits = spike_stat(pits.z) if pits is not None else None
+    sp_clean, sp_ev = clean.spike(), events.spike()
+    sp_pits = pits.spike() if pits is not None else None
     spike_thr = {}
     for pi, pname in enumerate(policies):
         pa = half_a & (clean.policy_id == pi)
@@ -273,9 +321,10 @@ def calibrate(clean: Scorer, events: Scorer, ev_data: WMData, pits: Scorer | Non
         spike_thr[pname] = float(torch.quantile(v.float(), 1.0 - target_far / 2))
     print(f"[eval] spike thresholds (max |z| of base_lin_vel x, y): {spike_thr}", flush=True)
     rows = []
-    for stat, wname, clip, k in itertools.product(grid["stat"], grid["weights"], grid["clip"], grid["k"]):
-        w = torch.as_tensor(weights(wname), dtype=torch.float32, device=dev)
-        S_clean, S_ev = clean.raw(w, clip, stat), events.raw(w, clip, stat)
+    if combos is None:
+        combos = list(itertools.product(grid["stat"], grid["weights"], grid["clip"]))
+    for (stat, wname, clip), k in itertools.product(combos, grid["k"]):
+        S_clean, S_ev = clean.score(wname, clip, stat), events.score(wname, clip, stat)
         row = {"stat": stat, "weights": wname, "clip": clip, "k": k, "per_policy": {}}
         for pi, pname in enumerate(policies):
             thr = spike_thr[pname]
@@ -296,8 +345,7 @@ def calibrate(clean: Scorer, events: Scorer, ev_data: WMData, pits: Scorer | Non
             det = {}
             for eid, ename in enumerate(ev_names):
                 sel = (ev_type[pe] == eid) & ~reset_before[pe]
-                win = ae[sel][:, E + 1 : E + 151]
-                first = torch.where(win.any(1), win.float().argmax(1) + 1, torch.full_like(win[:, 0], 10**6, dtype=torch.long))
+                first = first_alarm(ae[sel][:, E + 1 : E + 151])
                 post = xe[sel][:, E + 51 : E + 151]
                 post_scored = events.scored[pe][sel][:, E + 51 : E + 151]
                 hit1 = first <= 50
@@ -313,7 +361,7 @@ def calibrate(clean: Scorer, events: Scorer, ev_data: WMData, pits: Scorer | Non
                                         "far_verify": far_b, "events": det}
             if pits is not None:
                 pp = pits.policy_id == pi
-                S_p = pits.raw(w, clip, stat)[pp]
+                S_p = pits.score(wname, clip, stat)[pp]
                 ap_, _ = cusum((S_p - m0) / s0, pits.scored[pp], pits.reset[pp], k, h, sp_pits[pp] > thr)
                 dec = torch.from_numpy(pits_data.deceived).to(dev)[pp]  # [n, T]: scan fake at this frame
                 after = torch.zeros_like(dec)
@@ -457,8 +505,7 @@ def main():
     print(f"[eval] best: {best['stat']} {best['weights']} clip {best['clip']} k {best['k']}  key detection {best['key_detect_mean']:.3f}")
 
     # traces of the standardized score around events for the chosen configuration
-    w = torch.as_tensor(weights(best["weights"]), dtype=torch.float32, device=args.device)
-    S_ev = sc_ev.raw(w, best["clip"], best["stat"])
+    S_ev = sc_ev.score(best["weights"], best["clip"], best["stat"])
     E = ev.meta["event_step"]
     ev_type = torch.from_numpy(ev.info["event_type"].astype(np.int64)).to(args.device)
     rb = torch.from_numpy(ev.info["reset_before_event"]).to(args.device)
