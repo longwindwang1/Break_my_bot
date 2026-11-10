@@ -75,6 +75,96 @@ namespace BMB
             return float.IsNaN(v) ? globalMu : v;
         }
 
+        /// <summary>Painted μ at a world point, NaN where nothing is painted (the global μ applies there).</summary>
+        public float PaintedMuAt(Vector3 world)
+        {
+            if (!Cell(world, out var ix, out var iz))
+                return float.NaN;
+            return grid[iz * nx + ix];
+        }
+
+        /// <summary>
+        /// Painted patches with μ below <paramref name="maxMu"/> within <paramref name="radius"/> of a point: the painted
+        /// grid sampled every <paramref name="step"/> m, grouped into 8-connected blobs. Read-only; for the AI pilot.
+        /// </summary>
+        public List<FrictionPatch> SamplePatches(Vector3 centre, float radius, float maxMu = 0.5f, float step = 0.5f)
+        {
+            EnsureGrid();
+            var n = Mathf.Max(1, Mathf.CeilToInt(radius / step));
+            var side = 2 * n + 1;
+            var mu = new float[side * side];
+            for (var j = 0; j < side; j++)
+                for (var i = 0; i < side; i++)
+                {
+                    var dx = (i - n) * step;
+                    var dz = (j - n) * step;
+                    var v = float.NaN;
+                    if (dx * dx + dz * dz <= radius * radius)
+                    {
+                        var p = PaintedMuAt(centre + new Vector3(dx, 0f, dz));
+                        if (!float.IsNaN(p) && p < maxMu)
+                            v = p;
+                    }
+                    mu[j * side + i] = v;
+                }
+
+            var patches = new List<FrictionPatch>();
+            var seen = new bool[mu.Length];
+            var stack = new Stack<int>();
+            var cells = new List<int>();
+            for (var s = 0; s < mu.Length; s++)
+            {
+                if (seen[s] || float.IsNaN(mu[s]))
+                    continue;
+                cells.Clear();
+                seen[s] = true;
+                stack.Push(s);
+                while (stack.Count > 0)
+                {
+                    var c = stack.Pop();
+                    cells.Add(c);
+                    int ci = c % side, cj = c / side;
+                    for (var dj = -1; dj <= 1; dj++)
+                        for (var di = -1; di <= 1; di++)
+                        {
+                            int ni = ci + di, nj = cj + dj;
+                            if (ni < 0 || nj < 0 || ni >= side || nj >= side)
+                                continue;
+                            var k = nj * side + ni;
+                            if (!seen[k] && !float.IsNaN(mu[k]))
+                            {
+                                seen[k] = true;
+                                stack.Push(k);
+                            }
+                        }
+                }
+
+                var sum = Vector3.zero;
+                float minMu = float.MaxValue, meanMu = 0f;
+                foreach (var c in cells)
+                {
+                    sum += Offset(c);
+                    minMu = Mathf.Min(minMu, mu[c]);
+                    meanMu += mu[c];
+                }
+                var mid = sum / cells.Count;
+                var extent = 0f;
+                foreach (var c in cells)
+                    extent = Mathf.Max(extent, (Offset(c) - mid).magnitude);
+                patches.Add(new FrictionPatch
+                {
+                    Centre = centre + mid,
+                    Radius = extent + step / 2f,
+                    MinMu = minMu,
+                    MeanMu = meanMu / cells.Count,
+                    Samples = cells.Count,
+                });
+            }
+            return patches;
+
+            Vector3 Offset(int c) => new Vector3((c % side - n) * step, 0f, (c / side - n) * step);
+        }
+
         /// <summary>Paints μ on every cell whose centre lies within the disc; returns the number of cells.</summary>
         public int Paint(Vector3 centre, float radius, float mu) => Stamp(centre, radius, mu);
 
@@ -178,5 +268,15 @@ namespace BMB
             if (overlay != null)
                 DestroyImmediate(overlay);
         }
+    }
+
+    /// <summary>A blob of painted low-friction ground (Unity world centre; the radius covers every sample).</summary>
+    public struct FrictionPatch
+    {
+        public Vector3 Centre;
+        public float Radius;
+        public float MinMu;
+        public float MeanMu;
+        public int Samples;
     }
 }
