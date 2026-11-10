@@ -127,6 +127,16 @@ Button.chip.hard:hover {
     margin-left: 18px;
 }
 
+/* The player's speed limit, next to the mode chip (top left). */
+.speed-limit {
+    width: 210px;
+    margin-left: 6px;
+}
+
+.speed-limit .neon-slider {
+    margin: 0;
+}
+
 /* ---- icon buttons ------------------------------------------------------------------------------------------- */
 
 .neon-icon {

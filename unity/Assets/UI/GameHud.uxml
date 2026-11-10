@@ -6,6 +6,7 @@
             <ui:Label name="title" text="BREAK MY BOT" class="title" />
             <ui:Label name="policy" text="POLICY —" class="chip" />
             <ui:Button name="mode" class="chip mode" />
+            <ui:VisualElement name="speed-limit" class="speed-limit" />
             <ui:VisualElement class="spacer" picking-mode="Ignore" />
             <ui:Label name="clock" class="readout num" />
             <ui:Label name="falls" class="readout num" />

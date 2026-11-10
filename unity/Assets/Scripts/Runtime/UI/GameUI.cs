@@ -37,7 +37,7 @@ namespace BMB
         readonly List<(ToolControl control, VisualElement element)> bound = new List<(ToolControl, VisualElement)>();
         readonly List<(Button button, ToolControl control, Func<bool> on)> segments = new List<(Button, ToolControl, Func<bool>)>();
         Button fixedButton, manualButton;
-        NeonSlider cruise;
+        NeonSlider cruise, speedLimit;
         DisturbanceTool shownTool;
         int shownEvents = -1;
         float toastUntil;
@@ -95,6 +95,7 @@ namespace BMB
             modeButton = root.Q<Button>("mode");
             modeButton.clicked += () => manager.HardMode = !manager.HardMode;
             Tip(modeButton, "Training ranges vs hard mode (H)");
+            BuildSpeedLimit(root.Q("speed-limit"));
 
             BuildTopButtons(root.Q("top-buttons"));
             BuildRail(root.Q("rail"));
@@ -155,6 +156,29 @@ namespace BMB
             bar.Add(pauseButton);
             bar.Add(IconButton(NeonIconKind.Export, "Save the event log as CSV", ExportLog));
             bar.Add(IconButton(NeonIconKind.Help, "Controls (F1)", () => ShowHelp(!HelpVisible)));
+        }
+
+        /// <summary>Top left: the player's speed limit (keys, stick and cruise; not the AI pilot).</summary>
+        void BuildSpeedLimit(VisualElement slot)
+        {
+            speedLimit = null;
+            if (slot == null)
+                return;
+            slot.Clear();
+            if (commands == null)
+            {
+                slot.style.display = DisplayStyle.None;
+                return;
+            }
+            slot.style.display = DisplayStyle.Flex;
+            speedLimit = new NeonSlider(new SliderControl
+            {
+                Label = "Max speed", Unit = "m/s", Format = "0.0", Step = 0.1f,
+                Get = () => Mathf.Min(commands.MaxSpeed, 1f), Set = v => commands.MaxSpeed = v,
+                Range = () => new Vector2(0.1f, 1f),
+            });
+            slot.Add(speedLimit);
+            Tip(slot, "Caps the robot's walking speed when you drive it (keys, stick, cruise). The AI pilot is not limited.");
         }
 
         void BuildRail(VisualElement rail)
@@ -712,6 +736,7 @@ namespace BMB
             RefreshWorldModel(ready ? c : null);
             RefreshEvents();
             RefreshDrive();
+            speedLimit?.Refresh();
             RefreshPilot(ready ? c : null);
         }
 

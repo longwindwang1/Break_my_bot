@@ -37,6 +37,12 @@ namespace BMB
 
         public CommandsSpec Ranges => ranges ??= RobotInterface.Load().Commands;
 
+        /// <summary>
+        /// The player's speed limit: |(vx, vy)| of the command is scaled down to this (m/s); the turn rate is unchanged.
+        /// Infinite = no limit beyond the training ranges. The AI pilot (Go2Controller.CommandOverride) is not affected.
+        /// </summary>
+        public float MaxSpeed { get; set; } = float.PositiveInfinity;
+
         public void SetFixed(bool useFixed) => useFixedCommand = useFixed;
 
         void Awake() => ranges ??= RobotInterface.Load().Commands;
@@ -57,10 +63,10 @@ namespace BMB
         {
             var r = Ranges;
             var raw = useFixedCommand ? fixedCommand : Manual(keyboard, gamepad);
-            return new Vector3(
-                Mathf.Clamp(raw.x, r.LinVelX[0], r.LinVelX[1]),
-                Mathf.Clamp(raw.y, r.LinVelY[0], r.LinVelY[1]),
-                Mathf.Clamp(raw.z, r.AngVelZ[0], r.AngVelZ[1]));
+            var v = new Vector2(Mathf.Clamp(raw.x, r.LinVelX[0], r.LinVelX[1]), Mathf.Clamp(raw.y, r.LinVelY[0], r.LinVelY[1]));
+            if (v.magnitude > MaxSpeed)
+                v = v.normalized * Mathf.Max(0f, MaxSpeed);
+            return new Vector3(v.x, v.y, Mathf.Clamp(raw.z, r.AngVelZ[0], r.AngVelZ[1]));
         }
 
         Vector3 Manual(Keyboard keyboard, Gamepad gamepad)
