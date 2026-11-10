@@ -56,20 +56,35 @@ namespace BMB
         public bool Veto
         {
             get => veto;
-            set => veto = value;
+            set
+            {
+                SettingsChanges += veto != value ? 1 : 0;
+                veto = value;
+            }
         }
 
         public float VetoFallProb
         {
             get => vetoFallProb;
-            set => vetoFallProb = value;
+            set
+            {
+                SettingsChanges += vetoFallProb != value ? 1 : 0;
+                vetoFallProb = value;
+            }
         }
 
         public bool Guard
         {
             get => guard;
-            set => guard = value;
+            set
+            {
+                SettingsChanges += guard != value ? 1 : 0;
+                guard = value;
+            }
         }
+
+        /// <summary>Counts changes of the veto / guard settings (a round records whether they changed during it).</summary>
+        public int SettingsChanges { get; private set; }
 
         /// <summary>The cautious-gait cap is on (guard enabled and a surprise alarm within the hold time).</summary>
         public bool GuardActive => guard && Engaged && Now < guardUntil;

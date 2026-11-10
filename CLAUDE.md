@@ -53,6 +53,15 @@ and adapt online.
   - On stairs / boxes / pits normal walking is as surprising as ice in Unity.
   - The §11.4 MAD z-scale does not suit Unity's peaked residuals; a std ratio to Isaac's is used instead.
   - Not done yet: closed-loop alarm → cautious gait (experiment 1).
+- Claude as the Go2's pilot, route A (branch `unity-game`, `experiments/claude_pilot/`): Claude Code drives the robot
+  through MCP tools (`robot_walk_to`, `robot_move`, `robot_imagine`, `challenge_start`, …) in "Claude vs player"
+  rounds. The world model is the safety layer:
+  - veto: P(fall within 1 s) > 0.5 in the first imagined second;
+  - running lookahead;
+  - cautious gait for 2 s after surprise alarms.
+  - Imagined vs real position: 2–9 cm at 2 s.
+  - A 40 cm pit is halted 0.5 m short. With the veto off the robot falls in.
+  - Route B (in-game Claude API agent on the same `PilotToolbox`) is next.
 
 ## Two machines (this file is shared by both)
 - **Linux** (training): Isaac Lab, PyTorch, ONNX export, parity tests. Every command under "Commands" assumes it.
@@ -129,6 +138,14 @@ docs/         design notes
     Go2 posed by FK.
   - Alarms → `Go2Controller.SurpriseAlarm` → "surprise" events.
   - Calibration and detection: `Editor/WorldModelEval.cs`.
+- AI pilot (`Runtime/Pilot/`):
+  - `ClaudePilot` executes high-level orders by writing `Go2Controller.CommandOverride` every policy step; `PilotDrive`
+    is the pure walk-to / move logic.
+  - `PilotToolbox` checks orders, waits for attention events and builds the structured observation. It is shared by the
+    MCP tools (`Editor/Mcp/`, its own asmdef on MCP for Unity) and the planned in-game API agent.
+  - `PilotImagination` / `DreamDriver` imagine orders with `WorldModelDreamer`, which takes a per-step command function.
+  - `PilotChallenge` holds the goal, timer and score, and writes `experiments/claude_pilot/results.jsonl`.
+  - `PilotView` draws the goal and paths; the AI PILOT card is in `GameUI`. P hands control over or takes it back.
 
 ## Core specs
 - Robot: Unitree Go2, same official URDF in Isaac Lab and Unity
@@ -223,6 +240,10 @@ Unity (Windows; editor menu or MCP `execute_menu_item`):
   split only, reuse saved events)` (~9 min) → `experiments/w3_unity/wm_calibration_unity.json` (used by the runtime) and
   `experiments/unity_wm/{calibration,detection}.md`; raw z goes to `logs/unity_wm/*.bin`, and `Re-analyse saved runs`
   redoes the tables without simulating. Background jobs like the eval.
+- AI pilot: enter Play in the Playground scene; Claude Code then has the MCP tools `robot_observe`, `robot_walk_to`,
+  `robot_move`, `robot_stop`, `robot_wait`, `robot_imagine`, `challenge_start`, `challenge_status`, `pilot_config`
+  (restart the MCP server after changing a tool's parameters). Set `Application.runInBackground` so play continues
+  unfocused; the pilot does this when it takes control.
 - Tests: MCP `run_tests` (EditMode, assembly `BMB.Tests.EditMode`), or with the project closed:
   `Unity.exe -batchmode -projectPath unity -runTests -testPlatform EditMode -testResults results.xml`.
   Keep a saved scene open: a modified untitled scene makes the test runner block on a save dialog.

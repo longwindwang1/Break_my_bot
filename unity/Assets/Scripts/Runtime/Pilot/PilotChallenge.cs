@@ -25,7 +25,8 @@ namespace BMB
 
         bool subscribed;
         DisturbanceManager subscribedManager;
-        int fallsAtStart, ordersAtStart, vetoesAtStart, haltsAtStart, alarmsAtStart;
+        int fallsAtStart, ordersAtStart, vetoesAtStart, haltsAtStart, alarmsAtStart, settingsAtStart;
+        bool vetoAtStart, guardAtStart;
 
         public ClaudePilot Pilot => pilot;
         public bool Running { get; private set; }
@@ -50,7 +51,7 @@ namespace BMB
 
         Go2Controller Controller => pilot != null ? pilot.Controller : null;
         double Now => Controller != null && Controller.Initialized ? Controller.TotalTime : 0d;
-        public float Elapsed => Running ? (float)(Now - StartTime) : LastResult?.time_s ?? 0f;
+        public float Elapsed => Running ? (float)(Now - StartTime) : (float)(LastResult?.time_s ?? 0d);
         public float TimeLeft => Running ? Mathf.Max(0f, TimeLimit - Elapsed) : 0f;
 
         public float DistanceLeft => Controller != null && Controller.Initialized ? PilotPose.Of(Controller).DistanceTo(Goal) : float.NaN;
@@ -124,6 +125,9 @@ namespace BMB
             vetoesAtStart = pilot.Vetoes;
             haltsAtStart = pilot.Halts;
             alarmsAtStart = pilot.Alarms;
+            settingsAtStart = pilot.SettingsChanges;
+            vetoAtStart = pilot.Veto;
+            guardAtStart = pilot.Guard;
             Round++;
             Running = true;
             pilot.Goal = Goal;
@@ -206,13 +210,13 @@ namespace BMB
                 round = Round,
                 outcome = outcome,
                 success = reached,
-                score = R(reached ? 100f : Score(distance), 1),
-                time_s = R((float)(Now - StartTime), 1),
+                score = D(reached ? 100f : Score(distance), 1),
+                time_s = D(Now - StartTime, 1),
                 time_limit_s = TimeLimit,
-                start_distance = R(StartDistance),
-                final_distance = R(distance),
-                goal_x = R(Goal.x),
-                goal_y = R(Goal.y),
+                start_distance = D(StartDistance),
+                final_distance = D(distance),
+                goal_x = D(Goal.x),
+                goal_y = D(Goal.y),
                 falls = c != null ? c.Falls - fallsAtStart : 0,
                 disturbances = Disturbances,
                 orders = pilot.OrdersIssued - ordersAtStart,
@@ -220,8 +224,9 @@ namespace BMB
                 halts = pilot.Halts - haltsAtStart,
                 alarms = pilot.Alarms - alarmsAtStart,
                 turn_based = TurnBased,
-                veto = pilot.Veto,
-                guard = pilot.Guard,
+                veto = vetoAtStart,
+                guard = guardAtStart,
+                settings_changed = pilot.SettingsChanges != settingsAtStart,
                 pilot = PilotName,
                 policy = c != null ? c.Variant : "",
                 wall_time = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
@@ -269,7 +274,7 @@ namespace BMB
                 elapsed_s = R(Elapsed, 1),
                 time_left_s = R(TimeLeft, 1),
                 distance = R(float.IsFinite(d) ? d : 0f),
-                score = R(Running ? Score(d) : LastResult?.score ?? 0f, 1),
+                score = R(Running ? Score(d) : (float)(LastResult?.score ?? 0d), 1),
                 turn_based = TurnBased,
                 last_result = LastResult,
             };
@@ -283,6 +288,9 @@ namespace BMB
             var s = Mathf.Pow(10f, digits);
             return Mathf.Round(v * s) / s;
         }
+
+        /// <summary>Rounded as a double, so the JSON line reads 19.3, not 19.299999237060547.</summary>
+        static double D(double v, int digits = 2) => double.IsNaN(v) || double.IsInfinity(v) ? 0d : Math.Round(v, digits);
     }
 
     [Serializable]
@@ -293,13 +301,13 @@ namespace BMB
         public string outcome;
         public bool success;
         /// <summary>100 · max(0, 1 − distance left / start distance), 100 when reached.</summary>
-        public float score;
-        public float time_s;
-        public float time_limit_s;
-        public float start_distance;
-        public float final_distance;
-        public float goal_x;
-        public float goal_y;
+        public double score;
+        public double time_s;
+        public double time_limit_s;
+        public double start_distance;
+        public double final_distance;
+        public double goal_x;
+        public double goal_y;
         public int falls;
         public int disturbances;
         public int orders;
@@ -307,8 +315,11 @@ namespace BMB
         public int halts;
         public int alarms;
         public bool turn_based;
+        /// <summary>Veto / lookahead and surprise guard as set when the round started.</summary>
         public bool veto;
         public bool guard;
+        /// <summary>The veto / guard settings were changed during the round.</summary>
+        public bool settings_changed;
         public string pilot;
         public string policy;
         public string wall_time;

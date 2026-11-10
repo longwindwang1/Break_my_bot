@@ -465,7 +465,7 @@ namespace BMB
                 pilotTimeName.text = $"ROUND {r.round}";
                 pilotTime.text = r.success ? $"{r.time_s:0.0} s" : r.outcome.ToUpperInvariant();
                 pilotTime.EnableInClassList("alert", !r.success);
-                progress = r.score;
+                progress = (float)r.score;
             }
             else
             {

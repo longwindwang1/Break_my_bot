@@ -81,6 +81,8 @@ namespace BMB.Tests
             var saved = JsonUtility.FromJson<PilotChallengeResult>(lines[0]);
             Assert.AreEqual(r.time_s, saved.time_s);
             Assert.AreEqual("v2", saved.policy);
+            StringAssert.DoesNotContain("9999", lines[0], "rounded numbers in the results file");
+            Assert.IsTrue(saved.veto && saved.guard && !saved.settings_changed);
             Debug.Log($"[BMB] Challenge result line: {lines[0]}");
         }
 
@@ -88,11 +90,13 @@ namespace BMB.Tests
         public void Timeout_scores_progress_and_counts_disturbances()
         {
             var (robot, manager, pilot, challenge) = Setup();
+            pilot.Veto = false;
             challenge.Begin(new Vector2(10f, 0f), timeLimit: 10f);
             pilot.Toolbox.WalkTo(10f, 0f, 0.6f);
             world.Run(3f);
             manager.Push(new Vector2(0f, 0.3f));
             manager.SetPayload(2f, Vector3.zero);
+            pilot.Veto = true;  // switched back on during the round
             var w = pilot.Toolbox.BeginWait(30f);
             var steps = 0;
             while (challenge.Running && steps++ < 4000)
@@ -103,8 +107,10 @@ namespace BMB.Tests
             Assert.IsFalse(r.success);
             Assert.AreEqual(10f, r.time_s, 0.05f);
             Assert.AreEqual(2, r.disturbances);
-            Assert.AreEqual(challenge.Score(r.final_distance), r.score, 0.1f);
-            Assert.That(r.score, Is.InRange(30f, 90f), "about 0.5 m/s for 10 s of 10 m");
+            Assert.IsFalse(r.veto, "the settings at the start of the round");
+            Assert.IsTrue(r.settings_changed);
+            Assert.AreEqual(challenge.Score((float)r.final_distance), r.score, 0.1);
+            Assert.That(r.score, Is.InRange(30.0, 90.0), "about 0.5 m/s for 10 s of 10 m");
             Assert.AreEqual("timeout", pilot.Toolbox.Conclude(w, null).outcome, "the waiting pilot hears about it");
         }
 
